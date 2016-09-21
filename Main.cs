@@ -12,7 +12,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.MSBuild;
 using Microsoft.CodeAnalysis.Text;
 
-namespace CS2D
+namespace CSharpToD
 {
     class ErrorMessageException : Exception
     {
@@ -21,16 +21,16 @@ namespace CS2D
         {
         }
     }
-    class CS2DMain
+    class CSharpToD
     {
         static Boolean clean;
 
         public static String conversionRoot;
-        public static String cs2dDirectory;
+        public static String generatedCodePath;
 
         static void Usage()
         {
-            Console.WriteLine("cs2d [--dir <project-root>]");
+            Console.WriteLine("csharptod [--dir <project-root>]");
         }
         static String AssertArg(string[] args, ref int index)
         {
@@ -100,7 +100,7 @@ namespace CS2D
                     }
                     conversionRoot = Path.GetDirectoryName(configFile);
                 }
-                CS2DConfig config = new CS2DConfig(configFile);
+                Config config = new Config(configFile);
 
                 if(config.projects.Count == 0)
                 {
@@ -125,25 +125,25 @@ namespace CS2D
                 }
 
                 // Setup Directory
-                cs2dDirectory = Path.Combine(conversionRoot, "cs2d");
-                if (Directory.Exists(cs2dDirectory))
+                generatedCodePath = Path.Combine(conversionRoot, "cs2d");
+                if (Directory.Exists(generatedCodePath))
                 {
                     if (clean)
                     {
-                        Console.WriteLine("[{0}] Cleaning '{1}'", Thread.CurrentThread.ManagedThreadId, cs2dDirectory);
-                        Directory.Delete(cs2dDirectory, true);
-                        Directory.CreateDirectory(cs2dDirectory);
+                        Console.WriteLine("[{0}] Cleaning '{1}'", Thread.CurrentThread.ManagedThreadId, generatedCodePath);
+                        Directory.Delete(generatedCodePath, true);
+                        Directory.CreateDirectory(generatedCodePath);
                     }
                 }
                 else
                 {
-                    Directory.CreateDirectory(cs2dDirectory);
+                    Directory.CreateDirectory(generatedCodePath);
                 }
 
                 MSBuildWorkspace workspace = MSBuildWorkspace.Create();
                 workspace.LoadMetadataForReferencedProjects = true;
 
-                
+
                 // Start the tasks to load and process all the projects/files
                 for (int projectIndex = 0; projectIndex < projectModelsArray.Length; projectIndex++)
                 {
@@ -165,7 +165,7 @@ namespace CS2D
 
                 // Wait for all files in all code to be generated
                 TaskManager.WaitLoop();
-                
+
                 DBuildGenerator.MakeDProjectFile(config, projectModelsArray);
 
                 Console.WriteLine("TotalTime Time: {0} secs",
@@ -280,7 +280,7 @@ namespace CS2D
             //    Thread.CurrentThread.ManagedThreadId, document.FilePath);
             this.semanticModel = task.Result;
             Validate(semanticModel.GetDiagnostics());
-            
+
             new NamespaceMultiplexVisitor(this).Visit(syntaxTree.GetRoot());
             //Console.WriteLine("[{0}] Done processing '{1}'",
             //    Thread.CurrentThread.ManagedThreadId, document.FilePath);
@@ -288,7 +288,7 @@ namespace CS2D
         }
     }
 
-    
+
     public static class Helper
     {
         public static Boolean IsNullOrEmpty<T>(this IReadOnlyCollection<T> list)
@@ -327,7 +327,7 @@ namespace CS2D
             }
         }
     }
-    
+
     class NamespaceMultiplexVisitor : CSharpSyntaxVisitor
     {
         readonly CSharpFileModel csharpFileModel;

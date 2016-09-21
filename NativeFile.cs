@@ -4,7 +4,7 @@ using System.Runtime.InteropServices;
 using System.IO;
 using System.Security;
 
-namespace CS2D
+namespace CSharpToD
 {
     static class EncodingEx
     {

@@ -8,7 +8,7 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 
-namespace CS2D
+namespace CSharpToD
 {
     public static class SynchronizedDirectoryCreator
     {
@@ -56,9 +56,9 @@ namespace CS2D
 
     class DBuildGenerator
     {
-        public static void MakeDProjectFile(CS2DConfig config, ProjectModels[] projectModelsArray)
+        public static void MakeDProjectFile(Config config, ProjectModels[] projectModelsArray)
         {
-            String projectFile = Path.Combine(CS2DMain.cs2dDirectory, "build.d");
+            String projectFile = Path.Combine(CSharpToD.generatedCodePath, "build.d");
             using (DlangWriter writer = new DlangWriter(new BufferedNativeFileSink(
                 NativeFile.Open(projectFile, FileMode.Create, FileAccess.Write, FileShare.ReadWrite), new byte[512])))
             {
@@ -71,7 +71,7 @@ import std.path    : setExtension, buildNormalizedPath;
 enum OutputType {Library,Exe}
 ");
 
-                writer.WriteLine(@"immutable string rootPath = `{0}`;", CS2DMain.cs2dDirectory);
+                writer.WriteLine(@"immutable string rootPath = `{0}`;", CSharpToD.generatedCodePath);
                 writer.WriteLine(@"immutable string frameworkPath = `{0}`;",
                     Path.Combine(Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location),
                     Path.Combine("..",
@@ -94,7 +94,7 @@ enum OutputType {Library,Exe}
                 writer.Tab();
                 foreach(String includePath in config.includePaths)
                 {
-                    writer.WriteLine("`{0}`,", Path.Combine(CS2DMain.conversionRoot, includePath));
+                    writer.WriteLine("`{0}`,", Path.Combine(CSharpToD.conversionRoot, includePath));
                 }
                 writer.Untab();
                 writer.WriteLine("];");
@@ -102,7 +102,7 @@ enum OutputType {Library,Exe}
                 writer.Tab();
                 foreach (String library in config.libraries)
                 {
-                    writer.WriteLine("`{0}`,", Path.Combine(CS2DMain.conversionRoot, library));
+                    writer.WriteLine("`{0}`,", Path.Combine(CSharpToD.conversionRoot, library));
                 }
                 writer.Untab();
                 writer.WriteLine("];");
@@ -255,7 +255,7 @@ int main(string[] args)
                             @namespace.Substring(lastDotIndex + 1) + ".d");
                     }
                 }
-                this.filenameFullPath = Path.Combine(CS2DMain.cs2dDirectory, filenameRelative);
+                this.filenameFullPath = Path.Combine(CSharpToD.generatedCodePath, filenameRelative);
                 //Console.WriteLine("[DEBUG] Namespace '{0}' going to file '{1}'", @namespace, filenameFullPath);
             }
 
@@ -281,7 +281,7 @@ int main(string[] args)
                 {
                     foreach(String includeSourceFile in includeSourceFiles)
                     {
-                        String includeSourceFullPath = Path.Combine(CS2DMain.conversionRoot, includeSourceFile);
+                        String includeSourceFullPath = Path.Combine(CSharpToD.conversionRoot, includeSourceFile);
                         if(!File.Exists(includeSourceFullPath))
                         {
                             throw new InvalidOperationException(String.Format(

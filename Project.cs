@@ -5,7 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.CodeAnalysis;
 
-namespace CS2D
+namespace CSharpToD
 {
     public class ProjectModels
     {

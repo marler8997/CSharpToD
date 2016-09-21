@@ -2,7 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 
-namespace CS2D
+namespace CSharpToD
 {
     public struct ProjectConfig
     {
@@ -27,7 +27,7 @@ namespace CS2D
         Library,
         Exe,
     }
-    public class CS2DConfig
+    public class Config
     {
         public readonly String filename;
         public readonly OutputType outputType;
@@ -38,7 +38,7 @@ namespace CS2D
         public readonly List<IncludeSource> includeSources = new List<IncludeSource>();
         public readonly List<ProjectConfig> projects = new List<ProjectConfig>();
 
-        public CS2DConfig(String filename)
+        public Config(String filename)
         {
             this.filename = filename;
             using (StreamReader reader = new StreamReader(new FileStream(filename, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)))

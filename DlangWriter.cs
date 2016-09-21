@@ -3,7 +3,7 @@ using System.IO;
 using System.Collections.Generic;
 using Microsoft.CodeAnalysis.Text;
 
-namespace CS2D
+namespace CSharpToD
 {
     public class DlangWriter : IDisposable
     {
