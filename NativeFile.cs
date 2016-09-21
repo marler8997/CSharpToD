@@ -86,13 +86,7 @@ namespace CS2D
              [MarshalAs(UnmanagedType.U4)] FileMode creationDisposition,
              [MarshalAs(UnmanagedType.U4)] FileAttributes flagsAndAttributes,
              IntPtr templateFile);
-
-        /*
-        [DllImport("kernel32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool WriteFile(IntPtr hFile, byte[] buffer,
-           UInt32 nNumberOfBytesToWrite, out UInt32 lpNumberOfBytesWritten,
-           [In] ref System.Threading.NativeOverlapped lpOverlapped);*/
+        
         [DllImport("kernel32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool WriteFile(IntPtr hFile, byte[] buffer,
@@ -104,7 +98,6 @@ namespace CS2D
            UInt32 nNumberOfBytesToWrite, out UInt32 lpNumberOfBytesWritten,
            [In] IntPtr lpOverlapped);
     }
-
 
     public static class NativeFile
     {
@@ -127,11 +120,10 @@ namespace CS2D
         }
     }
 
-
     public interface ISink
     {
         void Flush();
-        
+
         unsafe void Put(Byte* buffer, UInt32 length);
         void Put(Byte[] buffer, UInt32 offset, UInt32 length);
         void Put(String str, UInt32 offset, UInt32 length);
@@ -142,6 +134,10 @@ namespace CS2D
         void PutLine(Byte[] buffer, UInt32 offset, UInt32 length);
         void PutLine(String str, UInt32 offset, UInt32 length);
         void PutLine(String str);
+    }
+    public interface IStreamSink
+    {
+        void Put(Stream stream);
     }
     public interface ITypedSink : ISink
     {
@@ -175,7 +171,7 @@ namespace CS2D
         }
     }
     */
-    public class BufferedNativeFileSink : ISink, IDisposable
+    public class BufferedNativeFileSink : ISink, IStreamSink, IDisposable
     {
         IntPtr fileHandle;
         byte[] buffer;
@@ -319,6 +315,24 @@ namespace CS2D
         public void PutLine(String str)
         {
             PutLine(str, 0, (uint)str.Length);
+        }
+
+        public void Put(Stream stream)
+        {
+            while(true)
+            {
+                Flush();
+                int size = stream.Read(buffer, 0, buffer.Length);
+                if (size <= 0)
+                {
+                    if(size < 0)
+                    {
+                        throw new IOException();
+                    }
+                    break;
+                }
+                bufferedLength = (uint)size;
+            }
         }
     }
 

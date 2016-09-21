@@ -1,0 +1,5 @@
+
+struct Generic
+{
+    string placeholder;
+}

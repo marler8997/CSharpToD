@@ -1,5 +1,8 @@
 bin/
 obj/
 /packages/
+/mscorlib/cs2d/
+/test/cs2d/
 .vs/
 *.user
+*.suo

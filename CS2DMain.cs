@@ -14,79 +14,189 @@ using Microsoft.CodeAnalysis.Text;
 
 namespace CS2D
 {
+    class ErrorMessageException : Exception
+    {
+        public ErrorMessageException(String message)
+            : base(message)
+        {
+        }
+    }
     class CS2DMain
     {
-        public static String projectDirectory;
-        public static String dlangDirectory;
+        static Boolean clean;
+
+        public static String conversionRoot;
+        public static String cs2dDirectory;
 
         static void Usage()
         {
-            Console.WriteLine("cs2d <project-file>");
+            Console.WriteLine("cs2d [--dir <project-root>]");
+        }
+        static String AssertArg(string[] args, ref int index)
+        {
+            index++;
+            if(index >= args.Length)
+            {
+                throw new ErrorMessageException(String.Format("option '{0}' requires an argument", args[index - 1]));
+            }
+            return args[index];
+        }
+        static int getopt(string[] args)
+        {
+            int saveIndex = 0;
+            for (int i = 0; i < args.Length; i++)
+            {
+                String arg = args[i];
+                if (arg.StartsWith("--"))
+                {
+                    if(arg.Equals("--clean"))
+                    {
+                        clean = true;
+                    }
+                    else
+                    {
+                        throw new ErrorMessageException(String.Format("Unknown option: {0}", arg));
+                    }
+                }
+                else if (arg.StartsWith("-"))
+                {
+                    throw new ErrorMessageException(String.Format("Unknown option: {0}", arg));
+                }
+                else
+                {
+                    args[saveIndex++] = arg;
+                }
+            }
+
+            return saveIndex;
         }
         static int Main(string[] args)
         {
-            if(args.Length == 0)
+            var startTime = Stopwatch.GetTimestamp();
+            try
             {
-                Usage();
-                return 0;
-            }
-            if(args.Length != 1)
-            {
-                Console.WriteLine("Error: too many command line arguments");
-                return 1;
-            }
-            String projectFile = args[0];
-            if(!File.Exists(projectFile))
-            {
-                Console.WriteLine("Error: \"{0}\" does not exist", projectFile);
-                return 1;
-            }
-            projectDirectory = Path.GetDirectoryName(projectFile);
+                int argsLength = getopt(args);
 
-            dlangDirectory = Path.Combine(projectDirectory, "dlang");
-            if (Directory.Exists(dlangDirectory))
-            {
-                Console.WriteLine("[{0}] Cleaning '{1}'", Thread.CurrentThread.ManagedThreadId, dlangDirectory);
-                Directory.Delete(dlangDirectory, true);
-            }
-            Directory.CreateDirectory(dlangDirectory);
-
-            MSBuildWorkspace workspace = MSBuildWorkspace.Create();
-            workspace.LoadMetadataForReferencedProjects = true;
-
-            Console.WriteLine("[{0}] Opening '{1}'...", Thread.CurrentThread.ManagedThreadId, projectFile);
-            Project project = workspace.OpenProjectAsync(projectFile).Result;
-
-            var beforeLoad = Stopwatch.GetTimestamp();
-            foreach (Document document in project.Documents)
-            {
-                if (!document.FilePath.StartsWith(projectDirectory))
+                String configFile = null;
+                if (argsLength == 1)
                 {
-                    Console.WriteLine("Project Directory : {0}", projectDirectory);
-                    Console.WriteLine("Source Document   : {0}", document.FilePath);
-                    Console.WriteLine("Error: source document did not start with project directory");
+                    configFile = args[0];
+                }
+                else if(argsLength > 1)
+                {
+                    Console.WriteLine("Error: too many command line arguments");
                     return 1;
                 }
-                String relativePathName = document.FilePath.Substring(projectDirectory.Length + 1);
 
-                var fileModel = new CSharpFileModel(document, relativePathName);
-                Console.WriteLine("[{0}] Starting syntax loader for '{1}'...",
-                    Thread.CurrentThread.ManagedThreadId, relativePathName);
-                TaskManager.AddTask(document.GetSyntaxTreeAsync().ContinueWith(fileModel.SyntaxTreeLoaded));
+                if(configFile == null)
+                {
+                    configFile = FindConversionRootAndConfigFile();
+                }
+                else
+                {
+                    if(!File.Exists(configFile))
+                    {
+                        throw new ErrorMessageException(String.Format("{0} does not exist", configFile));
+                    }
+                    conversionRoot = Path.GetDirectoryName(configFile);
+                }
+                CS2DConfig config = new CS2DConfig(configFile);
+
+                if(config.projects.Count == 0)
+                {
+                    Console.WriteLine("There are no projects configured");
+                    return 0;
+                }
+                //Console.WriteLine("[DEBUG] There are {0} project(s)", config.projects.Count);
+                ProjectModels[] projectModelsArray = new ProjectModels[config.projects.Count];
+                {
+                    int projectIndex = 0;
+                    foreach (ProjectConfig projectConfig in config.projects)
+                    {
+                        String projectFileFullPath = Path.Combine(conversionRoot, projectConfig.projectFile);
+                        if (!File.Exists(projectFileFullPath))
+                        {
+                            Console.WriteLine("Error: project does not exist: {0}", projectFileFullPath);
+                            return 1;
+                        }
+                        projectModelsArray[projectIndex] = new ProjectModels(projectFileFullPath);
+                        projectIndex++;
+                    }
+                }
+
+                // Setup Directory
+                cs2dDirectory = Path.Combine(conversionRoot, "cs2d");
+                if (Directory.Exists(cs2dDirectory))
+                {
+                    if (clean)
+                    {
+                        Console.WriteLine("[{0}] Cleaning '{1}'", Thread.CurrentThread.ManagedThreadId, cs2dDirectory);
+                        Directory.Delete(cs2dDirectory, true);
+                        Directory.CreateDirectory(cs2dDirectory);
+                    }
+                }
+                else
+                {
+                    Directory.CreateDirectory(cs2dDirectory);
+                }
+
+                MSBuildWorkspace workspace = MSBuildWorkspace.Create();
+                workspace.LoadMetadataForReferencedProjects = true;
+
+                
+                // Start the tasks to load and process all the projects/files
+                for (int projectIndex = 0; projectIndex < projectModelsArray.Length; projectIndex++)
+                {
+                    ProjectModels projectModels = projectModelsArray[projectIndex];
+                    Console.WriteLine("[{0}] Starting project loader for '{1}'...",
+                        Thread.CurrentThread.ManagedThreadId, projectModels.fileFullPath);
+                    TaskManager.AddTask(workspace.OpenProjectAsync(projectModels.fileFullPath).
+                        ContinueWith(projectModels.ProjectLoaded));
+                }
+
+                // Wait for all files in all projects to be processed
+                TaskManager.WaitLoop();
+
+                //
+                // Start Code Generation
+                //
+                Console.WriteLine("==================== Starting Code Generation =====================");
+                WorkspaceModels.AddCodeGenerationTasks(config.includeSources);
+
+                // Wait for all files in all code to be generated
+                TaskManager.WaitLoop();
+                
+                DBuildGenerator.MakeDProjectFile(config, projectModelsArray);
+
+                Console.WriteLine("TotalTime Time: {0} secs",
+                    (float)(Stopwatch.GetTimestamp() - startTime) / (float)Stopwatch.Frequency);
+                return 0;
             }
+            catch(ErrorMessageException e)
+            {
+                Console.WriteLine("Error: {0}", e.Message);
+                return 1;
+            }
+        }
 
-            //
-            // Create the D Project File
-            //
-            //MakeDProjectFile(projectFile, project, documentProcessors);
-
-            TaskManager.WaitLoop();
-            Console.WriteLine("Load Time: {0} secs", (float)(Stopwatch.GetTimestamp() - beforeLoad) / (float)Stopwatch.Frequency);
-
-            DlangGenerators.FinishGenerators();
-            
-            
-            return 0;
+        static String FindConversionRootAndConfigFile()
+        {
+            conversionRoot = Environment.CurrentDirectory;
+            while (true)
+            {
+                String configFile = Path.Combine(conversionRoot, "cs2d.config");
+                if (File.Exists(configFile))
+                {
+                    return configFile;
+                }
+                var newConversionRoot = Path.GetDirectoryName(conversionRoot);
+                if (String.IsNullOrEmpty(newConversionRoot) || newConversionRoot.Equals(conversionRoot))
+                {
+                    throw new ErrorMessageException(String.Format(
+                        "no cs2d.config file found at or above '{0}'", Environment.CurrentDirectory));
+                }
+                conversionRoot = newConversionRoot;
+            }
         }
     }
     static class TaskManager
@@ -117,44 +227,64 @@ namespace CS2D
         }
     }
 
+
     public class CSharpFileModel
     {
+        public readonly ProjectModels containingProject;
         public readonly Document document;
-        public readonly String relativePathAndName;
         SyntaxTree syntaxTree;
-        SemanticModel semanticModel;
+        public SemanticModel semanticModel;
 
-        public CSharpFileModel(Document document, String relativePathName)
+        public CSharpFileModel(ProjectModels containingProject, Document document)
         {
+            this.containingProject = containingProject;
             this.document = document;
-            this.relativePathAndName = relativePathName;
-            //this.fullDlangFilename = Path.Combine(CS2DMain.dlangDirectory, Path.ChangeExtension(relativePathAndName, "d"));
         }
+
+        void Validate(IEnumerable<Diagnostic> diagnostics)
+        {
+            int errorCount = 0;
+            int warningCount = 0;
+            foreach (Diagnostic diagnostic in syntaxTree.GetDiagnostics())
+            {
+                errorCount++;
+                if (diagnostic.Severity == DiagnosticSeverity.Error)
+                {
+                    Console.WriteLine("{0}: Error: {1}", document.FilePath, diagnostic.GetMessage());
+                    errorCount++;
+                }
+                else if (diagnostic.Severity == DiagnosticSeverity.Warning)
+                {
+                    Console.WriteLine("{0}: Warning: {1}", document.FilePath, diagnostic.GetMessage());
+                    warningCount++;
+                }
+            }
+            if (errorCount > 0)
+            {
+                throw new ErrorMessageException("SyntaxError(s)");
+            }
+        }
+
         public void SyntaxTreeLoaded(Task<SyntaxTree> task)
         {
-            Console.WriteLine("[{0}] Syntax tree loaded for '{1}'",
-                Thread.CurrentThread.ManagedThreadId, document.FilePath);
+            //Console.WriteLine("[{0}] [DEBUG] Syntax tree loaded for '{1}'",
+            //    Thread.CurrentThread.ManagedThreadId, document.FilePath);
             this.syntaxTree = task.Result;
+            Validate(syntaxTree.GetDiagnostics());
+
             TaskManager.AddTask(document.GetSemanticModelAsync().ContinueWith(SemanticTreeLoaded));
         }
         public void SemanticTreeLoaded(Task<SemanticModel> task)
         {
-            Console.WriteLine("[{0}] Semantic model loaded for '{1}'",
-                Thread.CurrentThread.ManagedThreadId, document.FilePath);
+            //Console.WriteLine("[{0}] Semantic model loaded for '{1}'",
+            //    Thread.CurrentThread.ManagedThreadId, document.FilePath);
             this.semanticModel = task.Result;
-
+            Validate(semanticModel.GetDiagnostics());
+            
             new NamespaceMultiplexVisitor(this).Visit(syntaxTree.GetRoot());
-            /*
-            DlangDirectoryCreator.SynchronizedCreateDirectoryFor(fullDlangFilename);
-
-            Console.WriteLine("[{0}] Converting file to {1}...", Thread.CurrentThread.ManagedThreadId, fullDlangFilename);
-            using (var dlangWriter = new DlangWriter(new BufferedNativeFileSink(
-                NativeFile.Open(fullDlangFilename, FileMode.Create, FileAccess.Write, FileShare.ReadWrite), new byte[512])))
-            {
-                new CS2DVisitor(dlangWriter).Visit(syntaxTree.GetRoot());
-            }
-            Console.WriteLine("[{0}] Done with {1}", Thread.CurrentThread.ManagedThreadId, fullDlangFilename);
-            */
+            //Console.WriteLine("[{0}] Done processing '{1}'",
+            //    Thread.CurrentThread.ManagedThreadId, document.FilePath);
+            containingProject.FileProcessed();
         }
     }
 
@@ -182,11 +312,18 @@ namespace CS2D
             private NameSyntaxIDVisitor() { }
             public override string DefaultVisit(SyntaxNode node)
             {
-                throw new Exception(String.Format("visitor of type {0} not implemented", node.GetType()));
+                throw new Exception(String.Format("NameSyntaxIDVisitor type {0} not implemented", node.GetType().Name));
             }
             public override string VisitIdentifierName(IdentifierNameSyntax node)
             {
                 return node.Identifier.Text;
+            }
+            public override string VisitQualifiedName(QualifiedNameSyntax node)
+            {
+                String resolvedName = String.Format("{0}.{1}", node.Left.Identifier(), node.Right.Identifier.Text);
+                //Console.WriteLine("[{0}] Resolved qualified name to '{1}'",
+                //    Thread.CurrentThread.ManagedThreadId, resolvedName);
+                return resolvedName;
             }
         }
     }
@@ -206,8 +343,7 @@ namespace CS2D
         {
             if (node.AttributeLists.Count > 0)
             {
-                DlangGenerator generator = DlangGenerators.GetOrCreatGenerator();
-                generator.ProcessAttributeLists(csharpFileModel, node.AttributeLists);
+                WorkspaceModels.AddAttributeLists(csharpFileModel, node.AttributeLists);
             }
             if (node.Externs.HasItems())
             {
@@ -224,9 +360,7 @@ namespace CS2D
         public override void VisitNamespaceDeclaration(NamespaceDeclarationSyntax node)
         {
             string @namespace = node.Name.Identifier();
-
-            DlangGenerator generator = DlangGenerators.GetOrCreatGenerator(@namespace);
-            generator.AddNamespace(csharpFileModel, node);
+            WorkspaceModels.AddNamespace(csharpFileModel, node);
         }
     }
 }
