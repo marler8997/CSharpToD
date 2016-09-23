@@ -25,35 +25,6 @@ namespace CSharpToD
         }
     }
 
-    public struct KeyValues<T, K> : IEnumerable<KeyValuePair<T, List<K>>>
-    {
-        readonly Dictionary<T, List<K>> map;
-        public KeyValues(Boolean igore)
-        {
-            this.map = new Dictionary<T, List<K>>();
-        }
-        public void Add(T key, K value)
-        {
-            List<K> list;
-            if (!map.TryGetValue(key, out list))
-            {
-                list = new List<K>();
-                map.Add(key, list);
-            }
-            list.Add(value);
-        }
-
-        IEnumerator IEnumerable.GetEnumerator()
-        {
-            throw new NotImplementedException();
-        }
-        public IEnumerator<KeyValuePair<T, List<K>>> GetEnumerator()
-        {
-            return map.GetEnumerator();
-
-        }
-    }
-
     class DBuildGenerator
     {
         public static void MakeDProjectFile(Config config, ProjectModels[] projectModelsArray)
@@ -72,11 +43,7 @@ enum OutputType {Library,Exe}
 ");
 
                 writer.WriteLine(@"immutable string rootPath = `{0}`;", CSharpToD.generatedCodePath);
-                writer.WriteLine(@"immutable string frameworkPath = `{0}`;",
-                    Path.Combine(Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location),
-                    Path.Combine("..",
-                    Path.Combine("..",
-                    Path.Combine("mscorlib", "cs2d")))));
+                writer.WriteLine(@"immutable string mscorlibPath = `{0}`;", CSharpToD.mscorlibPath);
 
 
                 writer.WriteLine(@"immutable string[] sourceFiles = [");
@@ -137,7 +104,7 @@ int main(string[] args)
     //
     string compileCommand = format(""dmd -c -I%s"", rootPath);
     if(!noMscorlib) {
-        compileCommand ~= "" -I"" ~ frameworkPath;
+        compileCommand ~= "" -I"" ~ mscorlibPath;
     }
     foreach(includePath; includePaths) {
         compileCommand ~= "" -I"" ~ buildNormalizedPath(includePath);
@@ -162,7 +129,7 @@ int main(string[] args)
         linkCommand ~= format("" -od%s"", rootPath);
     }
     if(!noMscorlib) {
-        compileCommand ~= "" "" ~ buildNormalizedPath(frameworkPath, ""mscorlib.lib"");
+        compileCommand ~= "" "" ~ buildNormalizedPath(mscorlibPath, ""mscorlib.lib"");
     }
     foreach(library; libraries) {
         linkCommand ~= format("" %s"", library);
@@ -182,14 +149,18 @@ int main(string[] args)
         }
     }
 
-    public class CSharpFileModelNodes
+    public class CSharpFileModelNodes : IComparable<CSharpFileModelNodes>
     {
         public readonly CSharpFileModel fileModel;
         public readonly List<SyntaxList<AttributeListSyntax>> attributeLists = new List<SyntaxList<AttributeListSyntax>>();
-        public readonly List<NamespaceDeclarationSyntax> namespaceDecls = new List<NamespaceDeclarationSyntax>();
+        public readonly List<MemberDeclarationSyntax> decls = new List<MemberDeclarationSyntax>();
         public CSharpFileModelNodes(CSharpFileModel fileModel)
         {
             this.fileModel = fileModel;
+        }
+        public int CompareTo(CSharpFileModelNodes other)
+        {
+            return fileModel.document.FilePath.CompareTo(other.fileModel.document.FilePath);
         }
     }
     public class DlangGenerator
@@ -203,7 +174,7 @@ int main(string[] args)
         List<String> includeSourceFiles;
 
         Dictionary<string, object> typeNameMap = new Dictionary<string, object>();
-        
+
         public DlangGenerator(String @namespace)
         {
             this.@namespace = @namespace;
@@ -212,20 +183,50 @@ int main(string[] args)
         {
             this.putInPackage = putInPackage;
         }
-        public void Finish()
+
+        CSharpFileModelNodes GetFileModelNodes(CSharpFileModel fileModel)
         {
-            //
-            // First Pass: find imports
-            //
-            FirstPassVisitor firstPass = new FirstPassVisitor();
-            foreach (CSharpFileModelNodes fileModelNodes in fileModelNodeMap.Values)
+            CSharpFileModelNodes fileModelNodes;
+            lock (fileModelNodeMap)
             {
-                foreach (NamespaceDeclarationSyntax namespaceDecl in fileModelNodes.namespaceDecls)
+                if (!fileModelNodeMap.TryGetValue(fileModel, out fileModelNodes))
                 {
-                    firstPass.currentFileModel = fileModelNodes.fileModel;
-                    firstPass.Visit(namespaceDecl);
+                    fileModelNodes = new CSharpFileModelNodes(fileModel);
+                    fileModelNodeMap.Add(fileModel, fileModelNodes);
                 }
             }
+            return fileModelNodes;
+        }
+        public void AddAttributeLists(CSharpFileModel fileModel, SyntaxList<AttributeListSyntax> attributeLists)
+        {
+            GetFileModelNodes(fileModel).attributeLists.Add(attributeLists);
+        }
+        public void AddDecl(CSharpFileModel fileModel, MemberDeclarationSyntax node)
+        {
+            GetFileModelNodes(fileModel).decls.Add(node);
+        }
+        public void AddIncludeFile(String includeFile)
+        {
+            if (includeSourceFiles == null)
+            {
+                includeSourceFiles = new List<string>();
+            }
+            includeSourceFiles.Add(includeFile);
+        }
+
+        public void Finish()
+        {
+            CSharpFileModelNodes[] fileModelNodesArray = new CSharpFileModelNodes[fileModelNodeMap.Count];
+            {
+                int i = 0;
+                foreach (CSharpFileModelNodes fileModelNodes in fileModelNodeMap.Values)
+                {
+                    fileModelNodesArray[i++] = fileModelNodes;
+                }
+            }
+            // Sort the files alphabetically, so that the output stays the same regardless
+            // of timing (which file gets processed first).
+            Array.Sort(fileModelNodesArray);
 
             //
             // Determine File Name
@@ -275,9 +276,22 @@ int main(string[] args)
                 writer.WriteLine();
 
                 //
+                // First Pass: find imports
+                //
+                FirstPassVisitor firstPass = new FirstPassVisitor(writer);
+                foreach (CSharpFileModelNodes fileModelNodes in fileModelNodesArray)
+                {
+                    foreach (MemberDeclarationSyntax decl in fileModelNodes.decls)
+                    {
+                        firstPass.currentFileModel = fileModelNodes.fileModel;
+                        firstPass.Visit(decl);
+                    }
+                }
+
+                //
                 // Add Include Files
                 //
-                if(includeSourceFiles != null)
+                if (includeSourceFiles != null)
                 {
                     foreach(String includeSourceFile in includeSourceFiles)
                     {
@@ -295,22 +309,40 @@ int main(string[] args)
                     }
                 }
 
-                foreach (KeyValuePair<INamespaceSymbol,List<ITypeSymbol>> namespaceAndType in firstPass.typesByNamespace)
+                foreach (KeyValuePair<String,HashSet<ITypeSymbol>> namespaceAndType in firstPass.typesByNamespace)
                 {
-                    if (namespaceAndType.Key.Name != this.@namespace)
+                    if (namespaceAndType.Key != this.@namespace)
                     {
-                        writer.WriteLine("import {0};", namespaceAndType.Key);
+                        if (namespaceAndType.Key.Length == 0)
+                        {
+                            writer.WriteLine("import __NoNamespace__ /*:");
+                        }
+                        else
+                        {
+                            writer.WriteLine("import {0} /*:", namespaceAndType.Key);
+                        }
+                        writer.Tab();
+                        uint typeIndex = 0;
+                        uint lastIndex = (uint)namespaceAndType.Value.Count - 1;
                         foreach(ITypeSymbol typeSymbol in namespaceAndType.Value)
                         {
-                            writer.WriteCommentedLine(typeSymbol.Name);
+                            writer.WriteDlangTypeName(typeSymbol);
+                            if(typeIndex < lastIndex)
+                            {
+                                writer.WriteLine(",");
+                            }
+                            else
+                            {
+                                writer.WriteLine("*/;");
+                            }
+                            typeIndex++;
                         }
+                        writer.Untab();
                     }
                 }
-                DlangVisitorGenerator visitor = new DlangVisitorGenerator(this, writer);
-                foreach (CSharpFileModelNodes fileModelNodes in fileModelNodeMap.Values)
+                DlangVisitorGenerator visitor = new DlangVisitorGenerator(this, writer, firstPass);
+                foreach (CSharpFileModelNodes fileModelNodes in fileModelNodesArray)
                 {
-
-
                     writer.WriteLine();
                     writer.WriteLine("//");
                     writer.WriteLine("// Source Generated From '{0}'", fileModelNodes.fileModel.document.FilePath);
@@ -322,52 +354,31 @@ int main(string[] args)
                             writer.WriteIgnored(attrList.GetText());
                         }
                     }
-                    foreach (NamespaceDeclarationSyntax namespaceDecl in fileModelNodes.namespaceDecls)
+                    foreach (MemberDeclarationSyntax decl in fileModelNodes.decls)
                     {
                         visitor.currentFileModel = fileModelNodes.fileModel;
-                        visitor.Visit(namespaceDecl);
+                        visitor.Visit(decl);
                     }
                 }
             }
         }
-
-        CSharpFileModelNodes GetFileModelNodes(CSharpFileModel fileModel)
-        {
-            CSharpFileModelNodes fileModelNodes;
-            lock (fileModelNodeMap)
-            {
-                if (!fileModelNodeMap.TryGetValue(fileModel, out fileModelNodes))
-                {
-                    fileModelNodes = new CSharpFileModelNodes(fileModel);
-                    fileModelNodeMap.Add(fileModel, fileModelNodes);
-                }
-            }
-            return fileModelNodes;
-        }
-        public void AddAttributeLists(CSharpFileModel fileModel, SyntaxList<AttributeListSyntax> attributeLists)
-        {
-            GetFileModelNodes(fileModel).attributeLists.Add(attributeLists);
-        }        public void AddNamespace(CSharpFileModel fileModel, NamespaceDeclarationSyntax node)
-        {
-            GetFileModelNodes(fileModel).namespaceDecls.Add(node);
-        }
-        public void AddIncludeFile(String includeFile)
-        {
-            if(includeSourceFiles == null)
-            {
-                includeSourceFiles = new List<string>();
-            }
-            includeSourceFiles.Add(includeFile);
-        }
     }
     class FirstPassVisitor : CSharpSyntaxVisitor
     {
+        readonly DlangWriter writer;
         public CSharpFileModel currentFileModel;
-
-
+        
         readonly HashSet<ITypeSymbol> typesAlreadyAdded = new HashSet<ITypeSymbol>();
-        public readonly KeyValues<INamespaceSymbol, ITypeSymbol> typesByNamespace =
-            new KeyValues<INamespaceSymbol, ITypeSymbol>(true);
+        public readonly KeyUniqueValues<string, ITypeSymbol> typesByNamespace =
+            new KeyUniqueValues<string, ITypeSymbol>(true);
+
+        public readonly KeyValues<string, TypeDeclarationSyntax> partialTypes =
+            new KeyValues<string, TypeDeclarationSyntax>(true);
+
+        public FirstPassVisitor(DlangWriter writer)
+        {
+            this.writer = writer;
+        }
 
         public override void DefaultVisit(SyntaxNode node)
         {
@@ -379,13 +390,16 @@ int main(string[] args)
                 Visit(member);
             }
         }
-
+        
         void AddNamespaceFrom(ITypeSymbol typeSymbol)
         {
             if(!typesAlreadyAdded.Contains(typeSymbol))
             {
                 typesAlreadyAdded.Add(typeSymbol);
-                typesByNamespace.Add(typeSymbol.ContainingNamespace, typeSymbol);
+                typesByNamespace.Add(typeSymbol.ContainingModule(), typeSymbol);
+                //Console.WriteLine("Namespace '{0}', from symbol '{1}'", typeSymbol.ContainingModule(), typeSymbol.Name);
+                //writer.WriteCommentedLine(String.Format("Namespace '{0}', from symbol '{1}'", typeSymbol.ContainingModule(), typeSymbol.Name));
+
 
                 INamedTypeSymbol namedTypeSymbol = typeSymbol as INamedTypeSymbol;
                 if (namedTypeSymbol != null && namedTypeSymbol.Arity > 0)
@@ -398,11 +412,15 @@ int main(string[] args)
             }
         }
 
-        void VisitTypeDeclaration(TypeDeclarationSyntax node)
+        void VisitTypeDeclaration(TypeDeclarationSyntax typeDecl)
         {
-            if (node.BaseList != null)
+            if (typeDecl.Modifiers.ContainsPartial())
             {
-                foreach (BaseTypeSyntax type in node.BaseList.Types)
+                partialTypes.Add(typeDecl.Identifier.Text, typeDecl);
+            }
+            if (typeDecl.BaseList != null)
+            {
+                foreach (BaseTypeSyntax type in typeDecl.BaseList.Types)
                 {
                     TypeInfo typeInfo = currentFileModel.semanticModel.GetTypeInfo(type.Type);
                     if (typeInfo.Type == null)
@@ -411,6 +429,10 @@ int main(string[] args)
                     }
                     AddNamespaceFrom(typeInfo.Type);
                 }
+            }
+            foreach (var member in typeDecl.Members)
+            {
+                Visit(member);
             }
         }
         public override void VisitClassDeclaration(ClassDeclarationSyntax node)
@@ -421,17 +443,39 @@ int main(string[] args)
         {
             VisitTypeDeclaration(node);
         }
+        public override void VisitStructDeclaration(StructDeclarationSyntax node)
+        {
+            VisitTypeDeclaration(node);
+        }
     }
+
+    struct TypeContext
+    {
+        public readonly TypeDeclarationSyntax typeDecl;
+        public readonly bool isStatic;
+        public TypeContext(TypeDeclarationSyntax typeDecl, bool isStatic)
+        {
+            this.typeDecl = typeDecl;
+            this.isStatic = isStatic;
+        }
+    }
+
     class DlangVisitorGenerator : CSharpSyntaxVisitor
     {
         readonly DlangGenerator generator;
         public readonly DlangWriter writer;
         public CSharpFileModel currentFileModel;
-        
-        public DlangVisitorGenerator(DlangGenerator generator, DlangWriter writer)
+        readonly FirstPassVisitor firstPass;
+
+        readonly Stack<TypeContext> currentTypeContext =
+            new Stack<TypeContext>();
+
+        public DlangVisitorGenerator(DlangGenerator generator, DlangWriter writer,
+            FirstPassVisitor firstPass)
         {
             this.generator = generator;
             this.writer = writer;
+            this.firstPass = firstPass;
         }
         public override void DefaultVisit(SyntaxNode node)
         {
@@ -450,105 +494,61 @@ int main(string[] args)
         }
 
 
-        static readonly Dictionary<string, string> PrimitiveTypeMap = new Dictionary<string, string>
+        static void WriteAttributes(DlangWriter writer, SyntaxList<AttributeListSyntax> attributeLists)
         {
-            {"Exception", "DotNetException" },
-            {"Byte"  , "ubyte" },
-            {"SByte" , "byte" },
-            {"Char"  , "wchar" },
-            {"UInt16", "ushort" },
-            {"Int16" , "short" },
-            {"UInt32", "uint" },
-            {"Int32" , "int" },
-            {"UInt64", "ulong" },
-            {"Int64" , "long" },
-        };
-        static void WriteDlangTypeName(DlangWriter writer, String @namespace, TypeDeclarationSyntax typeDecl)
-        {
-            UInt32 genericTypeCount = 0;
-            if(typeDecl.TypeParameterList != null)
+            foreach (var attributeList in attributeLists)
             {
-                genericTypeCount = (uint)typeDecl.TypeParameterList.Parameters.Count;
+                writer.WriteCommentedLine(attributeList.GetText().ToString().Trim());
             }
-            WriteDlangTypeName(writer, @namespace, typeDecl.Identifier.ToString(), genericTypeCount);
         }
-        static void WriteDlangTypeName(DlangWriter writer, String @namespace, String identifier, UInt32 genericTypeCount)
+        bool InStaticContext()
         {
-            // Special case for System.Exception
-            if (@namespace == "System")
-            {
-                if(genericTypeCount == 0)
-                {
-                    String dlangTypeName;
-                    if(PrimitiveTypeMap.TryGetValue(identifier, out dlangTypeName))
-                    {
-                        writer.Write(dlangTypeName);
-                        return;
-                    }
-                }
-            }
+            return currentTypeContext.Count > 0 && currentTypeContext.Peek().isStatic;
+        }
 
-            writer.Write(identifier);
-            if (genericTypeCount > 0)
-            {
-                writer.Write("{0}", genericTypeCount);
-            }
+        enum TypeDeclType {
+            Class = 0,
+            Interface = 1,
+            Struct = 2,
         }
-        static void WriteDlangTypeName(DlangWriter writer, ITypeSymbol typeSymbol)
+
+        void VisitTypeDeclarationSyntax(TypeDeclType typeDeclType, TypeDeclarationSyntax typeDecl)
         {
-            // Special case for System.Exception
-            if (typeSymbol.ContainingNamespace.Name == "System")
+            ModifierCategories modifiers = new ModifierCategories(typeDecl.Modifiers);
+            List<TypeDeclarationSyntax> partialTypeDecls;
+
+            if (modifiers.partial)
             {
-                // TODO: BUG: This will match generic types
-                String dlangTypeName;
-                if (PrimitiveTypeMap.TryGetValue(typeSymbol.Name, out dlangTypeName))
+                partialTypeDecls = firstPass.partialTypes[typeDecl.Identifier.Text];
+                if(partialTypeDecls.IndexOf(typeDecl) != 0)
                 {
-                    writer.Write(dlangTypeName);
+                    // Only generate the contents for the first type
                     return;
                 }
-            }
-
-            writer.Write(typeSymbol.Name);
-            INamedTypeSymbol namedTypeSymbol = typeSymbol as INamedTypeSymbol;
-            if (namedTypeSymbol != null)
-            {
-                if (namedTypeSymbol.Arity > 0)
+                foreach (TypeDeclarationSyntax partialTypeDecl in partialTypeDecls)
                 {
-                    writer.Write("{0}!(", namedTypeSymbol.Arity);
-                    bool atFirst = true;
-                    foreach (ITypeSymbol genericTypeArg in namedTypeSymbol.TypeArguments)
-                    {
-                        if (atFirst) { atFirst = false; } else { writer.Write(","); }
-                        WriteDlangTypeName(writer, genericTypeArg);
-                    }
-                    writer.Write(")");
+                    WriteAttributes(writer, partialTypeDecl.AttributeLists);
                 }
-            }
-        }
-
-
-        void VisitTypeDeclarationSyntax(bool isClass, TypeDeclarationSyntax node)
-        {
-            if (node.AttributeLists.HasItems())
-            {
-                foreach(var attr in node.AttributeLists)
-                {
-                    writer.WriteCommentedLine(attr.GetText().ToString().Trim());
-                }
-            }
-
-            ModifierCategories modifiers = new ModifierCategories(node.Modifiers);
-            if (modifiers.visibility == null)
-            {
-                // default visibility in C# is private, default in D is public
-                writer.Write("private ");
             }
             else
             {
-                writer.Write(modifiers.visibility);
+                partialTypeDecls = null;
+                WriteAttributes(writer, typeDecl.AttributeLists);
+            }
+
+            if (modifiers.dlangVisibility == null)
+            {
+                // default visibility for classes in in C# is internal, default in D is public
+                // since internal has no meaning after conversion to D, it must be public.
+                // Since default in D is public, there is no need for a modifier.
+                //writer.Write("private ");
+            }
+            else
+            {
+                writer.Write(modifiers.dlangVisibility);
                 writer.Write(" ");
             }
-            if (modifiers.@static)
+            if(currentTypeContext.Count > 0)
             {
                 writer.Write("static ");
             }
@@ -556,32 +556,41 @@ int main(string[] args)
             {
                 writer.Write("abstract ");
             }
+            if (modifiers.@sealed)
+            {
+                writer.Write("final ");
+            }
 
-            if(isClass)
+            switch(typeDeclType)
             {
-                writer.Write("class ");
+                case TypeDeclType.Class:
+                    writer.Write("class ");
+                    break;
+                case TypeDeclType.Interface:
+                    writer.Write("interface ");
+                    break;
+                case TypeDeclType.Struct:
+                    writer.Write("struct ");
+                    break;
             }
-            else
-            {
-                writer.Write("interface ");
-            }
-            WriteDlangTypeName(writer, generator.@namespace, node);
-            if (node.TypeParameterList != null)
+            writer.WriteDlangTypeName(generator.@namespace, typeDecl);
+            if (typeDecl.TypeParameterList != null)
             {
                 writer.Write("(");
                 bool atFirst = true;
-                foreach (TypeParameterSyntax typeParam in node.TypeParameterList.Parameters)
+                foreach (TypeParameterSyntax typeParam in typeDecl.TypeParameterList.Parameters)
                 {
                     if (atFirst) { atFirst = false; } else { writer.Write(","); }
                     writer.Write(typeParam.Identifier.Text);
                 }
                 writer.Write(")");
             }
-            if (node.BaseList != null)
+            // TODO: loop through base list of all partial classes
+            if (typeDecl.BaseList != null)
             {
                 writer.Write(" : ");
                 bool atFirst = true;
-                foreach (BaseTypeSyntax type in node.BaseList.Types)
+                foreach (BaseTypeSyntax type in typeDecl.BaseList.Types)
                 {
                     if (atFirst) { atFirst = false; } else { writer.Write(", "); }
 
@@ -592,42 +601,75 @@ int main(string[] args)
                     }
 
                     INamedTypeSymbol namedType = (INamedTypeSymbol)typeInfo.Type;
-                    WriteDlangTypeName(writer, namedType);
+                    writer.WriteDlangTypeName(namedType);
                 }
             }
-            if (node.ConstraintClauses.HasItems())
+            if (typeDecl.ConstraintClauses.HasItems())
             {
-                foreach (TypeParameterConstraintClauseSyntax constraint in node.ConstraintClauses)
+                foreach (TypeParameterConstraintClauseSyntax constraint in typeDecl.ConstraintClauses)
                 {
                     writer.WriteCommentedInline(constraint.GetText().ToString().Trim());
                 }
             }
             writer.WriteLine();
             writer.WriteLine("{");
+            /*
+            if (modifiers.@static)
+            {
+                writer.HalfTab();
+                writer.WriteLine("static:");
+                writer.HalfUntab();
+            }
+            */
             writer.Tab();
+            if(modifiers.@static)
+            {
+                writer.WriteLine("private this() {} // prevent instantiation");
+            }
 
-
-            //foreach (var member in node.Members)
-            //{
-            //    Visit(member);
-            //}
-            writer.WriteLine("// TODO: generate class contents");
+            try
+            {
+                currentTypeContext.Push(new TypeContext(typeDecl, modifiers.@static));
+                if (partialTypeDecls == null)
+                {
+                    foreach (var member in typeDecl.Members)
+                    {
+                        Visit(member);
+                    }
+                }
+                else
+                {
+                    foreach (TypeDeclarationSyntax partialTypeDecl in partialTypeDecls)
+                    {
+                        foreach (var member in partialTypeDecl.Members)
+                        {
+                            Visit(member);
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                currentTypeContext.Pop();
+            }
 
             writer.Untab();
             writer.WriteLine("}");
-
         }
+
         public override void VisitClassDeclaration(ClassDeclarationSyntax node)
         {
-            VisitTypeDeclarationSyntax(true, node);
+            VisitTypeDeclarationSyntax(TypeDeclType.Class, node);
         }
         public override void VisitInterfaceDeclaration(InterfaceDeclarationSyntax node)
         {
-            VisitTypeDeclarationSyntax(false, node);
+            //Console.WriteLine("Generate Interface: {0}", node.Identifier);
+            VisitTypeDeclarationSyntax(TypeDeclType.Interface, node);
         }
         public override void VisitStructDeclaration(StructDeclarationSyntax node)
         {
-            writer.WriteLine("// TODO: generate struct {0}", node.Identifier.Text);
+            //writer.WriteLine("// TODO: generate struct {0}", node.Identifier.Text);
+            VisitTypeDeclarationSyntax(TypeDeclType.Struct, node);
         }
         public override void VisitDelegateDeclaration(DelegateDeclarationSyntax node)
         {
@@ -642,47 +684,155 @@ int main(string[] args)
         {
             writer.WriteLine("// TODO: generate enum '{0}'", node.Identifier.Text);
         }
+
+
+        public override void VisitFieldDeclaration(FieldDeclarationSyntax node)
+        {
+            writer.WriteCommentedLine(String.Format("TODO: generate fields"));
+        }
+        public override void VisitConstructorDeclaration(ConstructorDeclarationSyntax node)
+        {
+            writer.WriteCommentedLine("TODO: generate constructor");
+        }
+        public override void VisitDestructorDeclaration(DestructorDeclarationSyntax node)
+        {
+            writer.WriteCommentedLine("TODO: generate destructor");
+        }
+        public override void VisitMethodDeclaration(MethodDeclarationSyntax node)
+        {
+            writer.WriteCommentedLine(String.Format("TODO: generate method {0}", node.Identifier));
+        }
+        public override void VisitPropertyDeclaration(PropertyDeclarationSyntax node)
+        {
+            writer.WriteCommentedLine(String.Format("TODO: generate property '{0}'", node.Identifier));
+        }
+        public override void VisitIndexerDeclaration(IndexerDeclarationSyntax node)
+        {
+            writer.WriteCommentedLine("TODO: generate indexer");
+        }
+        public override void VisitOperatorDeclaration(OperatorDeclarationSyntax node)
+        {
+            writer.WriteCommentedLine("TODO: generate operator");
+        }
+        public override void VisitConversionOperatorDeclaration(ConversionOperatorDeclarationSyntax node)
+        {
+            writer.WriteCommentedLine("TODO: generate conversion operator");
+        }
+        public override void VisitEventDeclaration(EventDeclarationSyntax node)
+        {
+            writer.WriteCommentedLine(String.Format("TODO: generate event '{0}'", node.Identifier));
+        }
+        public override void VisitEventFieldDeclaration(EventFieldDeclarationSyntax node)
+        {
+            writer.WriteCommentedLine("TODO: generate event field");
+        }
+    }
+
+    public static class Modifiers
+    {
+        public static bool ContainsPartial(this SyntaxTokenList tokens)
+        {
+            foreach(SyntaxToken token in tokens)
+            {
+                if(token.Text == "partial")
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+    public static class SemanticExtensions
+    {
+        public static String ContainingModule(this ITypeSymbol typeSymbol)
+        {
+            INamespaceSymbol namespaceSymbol = typeSymbol.ContainingNamespace;
+            if(namespaceSymbol == null || namespaceSymbol.Name.Length == 0)
+            {
+                return "__NoNamespace__";
+            }
+            return namespaceSymbol.ToString();
+        }
+    }
+
+    class SyntaxNodeException : Exception
+    {
+        public SyntaxNodeException(SyntaxNode node, String message)
+            : base(String.Format("{0}({1}): {2}", node.SyntaxTree.FilePath,
+                node.GetLocation().GetLineSpan(), message))
+        {
+        }
+        public SyntaxNodeException(SyntaxToken token, String message)
+            : base(String.Format("{0}({1}): {2}", token.SyntaxTree.FilePath,
+                token.GetLocation().GetLineSpan(), message))
+        {
+        }
     }
 
 
     struct ModifierCategories
     {
-        public string visibility;
+        public string dlangVisibility;
+        public bool partial;
         public bool @static;
         public bool @abstract;
+        public bool @sealed;
+        public bool @unsafe;
 
         public ModifierCategories(SyntaxTokenList modifiers)
         {
-            this.visibility = null;
+            this.dlangVisibility = null;
+            this.partial = false;
             this.@static = false;
             this.@abstract = false;
+            this.@sealed = false;
+            this.@unsafe = false;
 
             foreach (SyntaxToken modifier in modifiers)
             {
                 String text = modifier.Text;
-                if (text == "public" || text == "private")
+                if (text == "public" || text == "private" || text == "protected")
                 {
-                    if (this.visibility != null)
+                    if (this.dlangVisibility != null)
                     {
-                        throw new InvalidOperationException(String.Format("visibility set twice '{0}' and '{1}'",
-                            this.visibility, visibility));
+                        throw new SyntaxNodeException(modifier, String.Format("visibility set twice '{0}' and '{1}'",
+                            this.dlangVisibility, text));
                     }
-                    this.visibility = text;
+                    this.dlangVisibility = text;
+                }
+                else if(text == "protected")
+                {
+                    if (this.dlangVisibility != null)
+                    {
+                        throw new SyntaxNodeException(modifier, String.Format("visibility set twice '{0}' and '{1}'",
+                            this.dlangVisibility, text));
+                    }
+                    this.dlangVisibility = text;
                 }
                 else if (text == "internal")
                 {
-                    if (this.visibility != null)
+                    if (this.dlangVisibility != null)
                     {
-                        throw new InvalidOperationException(String.Format("visibility set twice '{0}' and '{1}'",
-                            this.visibility, visibility));
+                        if (this.dlangVisibility == "protected")
+                        {
+                            this.dlangVisibility = "public "; // Not sure what "protected internal" maps to, just use "public" for now
+                        }
+                        else
+                        {
+                            throw new SyntaxNodeException(modifier, String.Format("visibility set twice '{0}' and '{1}'",
+                                this.dlangVisibility, text));
+                        }
                     }
-                    this.visibility = "public"; // treat 'internal' as public
+                    else
+                    {
+                        this.dlangVisibility = "public"; // treat 'internal' as public
+                    }
                 }
                 else if (text == "static")
                 {
                     if (this.@static)
                     {
-                        throw new InvalidOperationException("static set twice");
+                        throw new SyntaxNodeException(modifier, "static set twice");
                     }
                     this.@static = true;
                 }
@@ -690,9 +840,33 @@ int main(string[] args)
                 {
                     if (this.@abstract)
                     {
-                        throw new InvalidOperationException("abstract set twice");
+                        throw new SyntaxNodeException(modifier, "abstract set twice");
                     }
                     this.@abstract = true;
+                }
+                else if(text == "partial")
+                {
+                    if(this.partial)
+                    {
+                        throw new SyntaxNodeException(modifier, "partial set twice");
+                    }
+                    this.partial = true;
+                }
+                else if(text == "sealed")
+                {
+                    if (this.@sealed)
+                    {
+                        throw new SyntaxNodeException(modifier, "sealed set twice");
+                    }
+                    this.@sealed = true;
+                }
+                else if(text == "unsafe")
+                {
+                    if (this.@unsafe)
+                    {
+                        throw new SyntaxNodeException(modifier, "unsafe set twice");
+                    }
+                    this.@unsafe = true;
                 }
                 else
                 {

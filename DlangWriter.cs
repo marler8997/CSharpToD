@@ -1,6 +1,8 @@
 ﻿using System;
 using System.IO;
 using System.Collections.Generic;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 
 namespace CSharpToD
@@ -47,6 +49,18 @@ namespace CSharpToD
             lineStarted = true;
         }
 
+        public void HalfTab()
+        {
+            prefixSpaceCount += 2;
+        }
+        public void HalfUntab()
+        {
+            if (prefixSpaceCount == 0)
+            {
+                throw new InvalidOperationException("CodeBug: Untab called more than Tab");
+            }
+            prefixSpaceCount -= 2;
+        }
         public void Tab()
         {
             prefixSpaceCount += 4;
@@ -98,6 +112,7 @@ namespace CSharpToD
             }
             sink.Put("//");
             sink.PutLine(str, offset, (uint)str.Length - offset);
+            lineStarted = false;
         }
         public void WriteCommentedInline(String str)
         {
@@ -106,6 +121,7 @@ namespace CSharpToD
             if (!lineStarted)
             {
                 WriteLinePrefix();
+                lineStarted = true;
             }
             sink.Put("/*");
             sink.Put(str, offset, (uint)str.Length - offset);
@@ -154,6 +170,107 @@ namespace CSharpToD
             // TODO: created a formattedWrite instead of calling String.Format
             sink.PutLine(String.Format(fmt, obj));
             lineStarted = false;
+        }
+
+
+        static readonly Dictionary<string, string> PrimitiveSystemTypeMap = new Dictionary<string, string>
+        {
+            {"Byte"  , "ubyte" },
+            {"SByte" , "byte" },
+            {"Char"  , "wchar" },
+            {"UInt16", "ushort" },
+            {"Int16" , "short" },
+            {"UInt32", "uint" },
+            {"Int32" , "int" },
+            {"UInt64", "ulong" },
+            {"Int64" , "long" },
+            {"Object", "DotNetObject" },
+            {"Exception", "DotNetException" },
+        };
+        static readonly Dictionary<string, string> PrimitiveSystemReflectionTypeMap = new Dictionary<string, string>
+        {
+            {"TypeInfo", "DotNetTypeInfo" },
+        };
+        public static string DotNetToD(string @namespace, string typeName, UInt32 genericTypeCount)
+        {
+            if (genericTypeCount == 0)
+            {
+                if (@namespace == "System")
+                {
+                    String dlangTypeName;
+                    if (PrimitiveSystemTypeMap.TryGetValue(typeName, out dlangTypeName))
+                    {
+                        return dlangTypeName;
+                    }
+                }
+                else if (@namespace == "System.Reflection")
+                {
+                    String dlangTypeName;
+                    if (PrimitiveSystemReflectionTypeMap.TryGetValue(typeName, out dlangTypeName))
+                    {
+                        return dlangTypeName;
+                    }
+                }
+            }
+            return typeName;
+        }
+        public void WriteDlangTypeName(String @namespace, String identifier, UInt32 genericTypeCount)
+        {
+            String dlangTypeName = DotNetToD(@namespace, identifier, genericTypeCount);
+            Write(dlangTypeName);
+            if (genericTypeCount > 0)
+            {
+                Write("{0}", genericTypeCount);
+            }
+        }
+        public void WriteDlangTypeName(String @namespace, TypeDeclarationSyntax typeDecl)
+        {
+            UInt32 genericTypeCount = 0;
+            if (typeDecl.TypeParameterList != null)
+            {
+                genericTypeCount = (uint)typeDecl.TypeParameterList.Parameters.Count;
+            }
+            WriteDlangTypeName(@namespace, typeDecl.Identifier.ToString(), genericTypeCount);
+        }
+
+        public void WriteDlangTypeName(ITypeSymbol typeSymbol)
+        {
+            WriteDlangTypeName(typeSymbol, false);
+        }
+        public void WriteDlangTypeName(ITypeSymbol typeSymbol, bool printingGenericType)
+        {
+            INamedTypeSymbol namedTypeSymbol = typeSymbol as INamedTypeSymbol;
+            int genericTypeCount = 0;
+            if (namedTypeSymbol != null)
+            {
+                genericTypeCount = namedTypeSymbol.Arity;
+            }
+
+            if (!printingGenericType)
+            {
+                if (typeSymbol.ContainingType != null)
+                {
+                    WriteDlangTypeName(typeSymbol.ContainingType);
+                    Write(".");
+                }
+            }
+
+            String containingNamespace = (typeSymbol.ContainingNamespace == null) ?
+                "" : typeSymbol.ContainingNamespace.Name;
+
+            String dlangTypeName = DotNetToD(containingNamespace, typeSymbol.Name, (uint)genericTypeCount);
+            Write(dlangTypeName);
+            if (genericTypeCount > 0)
+            {
+                Write("{0}!(", namedTypeSymbol.Arity);
+                bool atFirst = true;
+                foreach (ITypeSymbol genericTypeArg in namedTypeSymbol.TypeArguments)
+                {
+                    if (atFirst) { atFirst = false; } else { Write(","); }
+                    WriteDlangTypeName(genericTypeArg, true);
+                }
+                Write(")");
+            }
         }
     }
 }

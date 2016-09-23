@@ -29,9 +29,20 @@ namespace CSharpToD
                     {
                         break;
                     }
-                    *dest       = (byte)(0xC0 | (c >>   6));
+                    *(dest    ) = (byte)(0xC0 | (c >>   6));
                     *(dest + 1) = (byte)(0x80 | (c & 0x3F));
                     dest += 2;
+                }
+                else if(c <= 0xFFFF)
+                {
+                    if (dest + 2 >= destLimit)
+                    {
+                        break;
+                    }
+                    *(dest    ) = (byte)(0xE0 | (c >> 12));
+                    *(dest + 1) = (byte)(0x80 | ((c >> 6) & 0x3F));
+                    *(dest + 2) = (byte)(0x80 | (c & 0x3F));
+                    dest += 3;
                 }
                 else
                 {

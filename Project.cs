@@ -4,6 +4,7 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 
 namespace CSharpToD
 {
@@ -23,9 +24,37 @@ namespace CSharpToD
         }
         public void ProjectLoaded(Task<Project> task)
         {
-            var project = task.Result;
-            this.project = project;
+            project = task.Result;
+
             Console.WriteLine("[{0}] Loaded project '{1}'", Thread.CurrentThread.ManagedThreadId, fileFullPath);
+
+            //
+            // Check Source Defines
+            //
+            if(CSharpToD.config.sourceDefines.Count > 0)
+            {
+                CSharpParseOptions parseOptions = (CSharpParseOptions)project.ParseOptions;
+                var preprocessorSymbolNames = parseOptions.PreprocessorSymbolNames;
+                List<string> newSymbolNames = null;
+                foreach (string configured in CSharpToD.config.sourceDefines)
+                {
+                    if(!System.Linq.Enumerable.Contains(preprocessorSymbolNames, configured))
+                    {
+                        if(newSymbolNames == null)
+                        {
+                            newSymbolNames = new List<string>();
+                            newSymbolNames.AddRange(preprocessorSymbolNames);
+                        }
+                        Console.WriteLine("[{0}] [DEBUG] Adding SourceDefine '{1}'",
+                            Thread.CurrentThread.ManagedThreadId, configured);
+                        newSymbolNames.Add(configured);
+                    }
+                }
+                if(newSymbolNames != null)
+                {
+                    project = project.WithParseOptions(parseOptions.WithPreprocessorSymbols(newSymbolNames.ToArray()));
+                }
+            }
 
             //
             // Start tasks to process the project source files
@@ -33,9 +62,14 @@ namespace CSharpToD
             this.filesToProcess = (uint)System.Linq.Enumerable.Count(project.Documents);
             foreach (Document document in project.Documents)
             {
+                if(CSharpToD.printSourceFiles)
+                {
+                    Console.WriteLine("Source File: {0}", document.FilePath);
+                }
                 var fileModel = new CSharpFileModel(this, document);
                 //Console.WriteLine("[{0}] Starting syntax loader for '{1}'...",
                 //    Thread.CurrentThread.ManagedThreadId, relativePathName);
+
                 TaskManager.AddTask(document.GetSyntaxTreeAsync().ContinueWith(fileModel.SyntaxTreeLoaded));
             }
         }

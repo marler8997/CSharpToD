@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 
 namespace CSharpToD
 {
@@ -37,6 +38,9 @@ namespace CSharpToD
         public readonly List<string> libraries = new List<string>();
         public readonly List<IncludeSource> includeSources = new List<IncludeSource>();
         public readonly List<ProjectConfig> projects = new List<ProjectConfig>();
+        public readonly Dictionary<string, string> vars = new Dictionary<string, string>();
+        public readonly Dictionary<string, string> msbuildProperties = new Dictionary<string, string>();
+        public readonly List<string> sourceDefines = new List<string>();
 
         public Config(String filename)
         {
@@ -61,6 +65,7 @@ namespace CSharpToD
                     if(line.StartsWith("Project "))
                     {
                         String projectFile = OneArg("Project", lineNumber, line, (uint)"Project ".Length, "project");
+                        projectFile = ProcessString(lineNumber, projectFile);
                         projectFile = projectFile.Replace('/', Path.DirectorySeparatorChar);
                         projects.Add(new ProjectConfig(projectFile));
                     }
@@ -70,38 +75,59 @@ namespace CSharpToD
                     }
                     else if(line.StartsWith("OutputType "))
                     {
-                        String outputTypeString = OneArg("OutputType", lineNumber, line, (uint)"OutputType ".Length, "output type");
+                        String outputTypeString = ProcessString(lineNumber,
+                            OneArg("OutputType", lineNumber, line, (uint)"OutputType ".Length, "output type"));
                         this.outputType = (OutputType)Enum.Parse(typeof(OutputType), outputTypeString);
                     }
                     else if(line.StartsWith("OutputName "))
                     {
-                        this.outputName = OneArg("OutputType", lineNumber, line, (uint)"OutputType ".Length, "output type");
+                        this.outputName = ProcessString(lineNumber,
+                            OneArg("OutputType", lineNumber, line, (uint)"OutputType ".Length, "output type"));
                     }
                     else if(line.StartsWith("IncludePath "))
                     {
-                        includePaths.Add(OneArg("IncludePath", lineNumber, line, (uint)"IncludePath ".Length, "include path"));
+                        includePaths.Add(ProcessString(lineNumber,
+                            OneArg("IncludePath", lineNumber, line, (uint)"IncludePath ".Length, "include path")));
                     }
                     else if (line.StartsWith("Library "))
                     {
-                        libraries.Add(OneArg("Library", lineNumber, line, (uint)"Library ".Length, "library"));
+                        libraries.Add(ProcessString(lineNumber,
+                            OneArg("Library", lineNumber, line, (uint)"Library ".Length, "library")));
                     }
                     else if(line.StartsWith("IncludeSource "))
                     {
-                        String rest;
-                        String @namespace = line.Peel(14, out rest);
-                        if (String.IsNullOrEmpty(@namespace))
-                        {
-                            throw new ErrorMessageException(String.Format("{0}({1}): IncludeSource line must have a namespace and file",
-                                filename, lineNumber));
-                        }
-                        String file = rest.Peel(0, out rest);
-                        if (rest != null && rest.Trim().Length != 0)
-                        {
-                            throw new ErrorMessageException(String.Format("{0}({1}): IncludeSource line has too many arguments",
-                                filename, lineNumber));
-                        }
+                        String @namespace;
+                        String file = TwoArgs(out @namespace, "IncludeSource", lineNumber, line,
+                            (uint)"IncludeSource ".Length, "namespace", "file");
+                        @namespace = ProcessString(lineNumber, @namespace);
+                        file = ProcessString(lineNumber, file);
                         file = file.Replace('/', Path.DirectorySeparatorChar);
                         includeSources.Add(new IncludeSource(@namespace, file));
+                    }
+                    else if(line.StartsWith("Set "))
+                    {
+                        String varName;
+                        String value = TwoArgs(out varName, "Set", lineNumber, line,
+                            (uint)"Set ".Length, "name", "value");
+                        varName = ProcessString(lineNumber, varName);
+                        value = ProcessString(lineNumber, value);
+                        vars.Add(varName, value);
+                        //Console.WriteLine("\"{0}\" = \"{1}\"", varName, value);
+                    }
+                    else if (line.StartsWith("SetMSBuild "))
+                    {
+                        String varName;
+                        String value = TwoArgs(out varName, "SetMSBuild", lineNumber, line,
+                            (uint)"SetMSBuild ".Length, "name", "value");
+                        varName = ProcessString(lineNumber, varName);
+                        value = ProcessString(lineNumber, value);
+                        msbuildProperties.Add(varName, value);
+                        //Console.WriteLine("\"{0}\" = \"{1}\"", varName, value);
+                    }
+                    else if(line.StartsWith("SourceDefine "))
+                    {
+                        sourceDefines.Add(ProcessString(lineNumber,
+                            OneArg("SourceDefine", lineNumber, line, (uint)"SourceDefine ".Length, "source define")));
                     }
                     else
                     {
@@ -127,6 +153,89 @@ namespace CSharpToD
                     filename, lineNumber, directive));
             }
             return argString;
+        }
+        String TwoArgs(out String outArg1, String directive, UInt32 lineNumber, String line, UInt32 offset, String arg1Name, String arg2Name)
+        {
+            String rest;
+            outArg1 = line.Peel((int)offset, out rest);
+            if (String.IsNullOrEmpty(outArg1))
+            {
+                throw new ErrorMessageException(String.Format("{0}({1}): The {2} directive must have a(n) {3}",
+                    filename, lineNumber, directive, arg1Name));
+            }
+            String arg2 = rest.Peel(0, out rest);
+            if (rest != null && rest.Trim().Length != 0)
+            {
+                throw new ErrorMessageException(String.Format("{0}({1}): The {2} directive line has too many arguments",
+                    filename, lineNumber, directive));
+            }
+            return arg2;
+        }
+
+        String ProcessString(UInt32 lineNumber, String str)
+        {
+            int indexOfFirstDollar = str.IndexOf('$');
+            if (indexOfFirstDollar < 0)
+            {
+                return str;
+            }
+
+            StringBuilder builder = new StringBuilder(str.Length * 2);
+            builder.Append(str, 0, indexOfFirstDollar);
+
+            for(int i = indexOfFirstDollar; ;)
+            {
+                i++;
+                if(i >= str.Length)
+                {
+                    throw new FormatException(String.Format("{0}({1}): String cannot end with '$'",
+                        filename, lineNumber));
+                }
+                if(str[i] != '(')
+                {
+                    throw new FormatException(String.Format("{0}({1}): The '$' character must be followed by '(', but got '{2}'",
+                        filename, lineNumber, str[i]));
+                }
+                i++;
+                int varStartIndex = i;
+                for(;;i++)
+                {
+                    if(i >= str.Length)
+                    {
+                        throw new FormatException(String.Format("{0}({1}): The '$(' sequence must have and ending ')'",
+                            filename, lineNumber));
+                    }
+                    if(str[i] == ')')
+                    {
+                        break;
+                    }
+                }
+                String varName = str.Substring((int)varStartIndex, (int)(i - varStartIndex));
+                String value;
+                if(!vars.TryGetValue(varName, out value))
+                {
+                    throw new FormatException(String.Format("{0}({1}): The $({2}) variable has not been set",
+                        filename, lineNumber, varName));
+                }
+                builder.Append(value);
+
+                // Find the next variable
+                i++;
+                int saveOffset = i;
+                for(;;i++)
+                {
+                    if(i >= str.Length)
+                    {
+                        builder.Append(str, saveOffset, i - saveOffset);
+                        return builder.ToString();
+                    }
+                    if(str[i] == '$')
+                    {
+                        builder.Append(str, saveOffset, i - saveOffset);
+                        break;
+                    }
+                }
+            }
         }
     }
 

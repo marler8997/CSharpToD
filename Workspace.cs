@@ -38,11 +38,11 @@ namespace CSharpToD
                 GetOrCreatGenerator().AddAttributeLists(fileModel, attributeLists);
             }
         }
-        public static void AddNamespace(CSharpFileModel fileModel, NamespaceDeclarationSyntax node)
+        public static void AddDecl(CSharpFileModel fileModel, String @namespace, MemberDeclarationSyntax node)
         {
             lock (NamespaceGeneratorMap)
             {
-                GetOrCreatGenerator(node.Name.Identifier()).AddNamespace(fileModel, node);
+                GetOrCreatGenerator(@namespace).AddDecl(fileModel, node);
             }
         }
 

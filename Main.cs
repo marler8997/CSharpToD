@@ -14,6 +14,14 @@ using Microsoft.CodeAnalysis.Text;
 
 namespace CSharpToD
 {
+    class AlreadyPrintedErrorException : Exception
+    {
+        public AlreadyPrintedErrorException()
+            : base(null)
+        {
+
+        }
+    }
     class ErrorMessageException : Exception
     {
         public ErrorMessageException(String message)
@@ -24,9 +32,14 @@ namespace CSharpToD
     class CSharpToD
     {
         static Boolean clean;
+        public static Boolean noWarnings;
+        public static Boolean ignoreFileErrors;
+        public static Boolean printSourceFiles;
 
         public static String conversionRoot;
         public static String generatedCodePath;
+        public static String mscorlibPath;
+        public static Config config;
 
         static void Usage()
         {
@@ -52,6 +65,18 @@ namespace CSharpToD
                     if(arg.Equals("--clean"))
                     {
                         clean = true;
+                    }
+                    else if(arg.Equals("--no-warnings"))
+                    {
+                        noWarnings = true;
+                    }
+                    else if(arg.Equals("--ignore-file-errors"))
+                    {
+                        ignoreFileErrors = true;
+                    }
+                    else if(arg.Equals("--print-source-files"))
+                    {
+                        printSourceFiles = true;
                     }
                     else
                     {
@@ -100,13 +125,28 @@ namespace CSharpToD
                     }
                     conversionRoot = Path.GetDirectoryName(configFile);
                 }
-                Config config = new Config(configFile);
-
+                config = new Config(configFile);
                 if(config.projects.Count == 0)
                 {
                     Console.WriteLine("There are no projects configured");
                     return 0;
                 }
+                mscorlibPath = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location),
+                    Path.Combine("..",
+                    Path.Combine("..",
+                    Path.Combine("mscorlib", "cs2d")))));
+
+                if (!config.noMscorlib)
+                {
+                    String mscorlibFilename = Path.Combine(mscorlibPath, "mscorlib.lib");
+                    // Check that mscorlib exists
+                    if(!File.Exists(mscorlibFilename))
+                    {
+                        Console.WriteLine("Error: mscorlib is not built: {0}", mscorlibFilename);
+                        return 1;
+                    }
+                }
+
                 //Console.WriteLine("[DEBUG] There are {0} project(s)", config.projects.Count);
                 ProjectModels[] projectModelsArray = new ProjectModels[config.projects.Count];
                 {
@@ -140,9 +180,12 @@ namespace CSharpToD
                     Directory.CreateDirectory(generatedCodePath);
                 }
 
-                MSBuildWorkspace workspace = MSBuildWorkspace.Create();
+                MSBuildWorkspace workspace = MSBuildWorkspace.Create(config.msbuildProperties);
                 workspace.LoadMetadataForReferencedProjects = true;
+                workspace.SkipUnrecognizedProjects = false;
 
+                // Setup Unhandled Task Exceptions
+                //TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
 
                 // Start the tasks to load and process all the projects/files
                 for (int projectIndex = 0; projectIndex < projectModelsArray.Length; projectIndex++)
@@ -155,18 +198,56 @@ namespace CSharpToD
                 }
 
                 // Wait for all files in all projects to be processed
-                TaskManager.WaitLoop();
+                if(!TaskManager.WaitLoop())
+                {
+                    return 1; // fail
+                }
 
                 //
                 // Start Code Generation
                 //
+                Console.WriteLine();
                 Console.WriteLine("==================== Starting Code Generation =====================");
                 WorkspaceModels.AddCodeGenerationTasks(config.includeSources);
 
                 // Wait for all files in all code to be generated
-                TaskManager.WaitLoop();
+                if (!TaskManager.WaitLoop())
+                {
+                    return 1; // fail
+                }
 
                 DBuildGenerator.MakeDProjectFile(config, projectModelsArray);
+
+
+
+                //
+                // Compile D Code
+                //
+                String rdmdProgram = FindProgram("rdmd");
+                if (rdmdProgram == null)
+                {
+                    Console.WriteLine("rdmd not found, cannot compile D code");
+                }
+                else
+                {
+                    Console.WriteLine();
+                    Console.WriteLine("======================= Compiling D Code ========================");
+                    {
+                        Process compilerProcess = new Process();
+                        compilerProcess.StartInfo.FileName = rdmdProgram;
+                        compilerProcess.StartInfo.Arguments = Path.Combine(generatedCodePath, "build.d");
+                        compilerProcess.StartInfo.UseShellExecute = false;
+                        Console.WriteLine("[RUN] '{0} {1}'", compilerProcess.StartInfo.FileName,
+                            compilerProcess.StartInfo.Arguments);
+                        compilerProcess.Start();
+                        compilerProcess.WaitForExit();
+                        if (compilerProcess.ExitCode != 0)
+                        {
+                            Console.WriteLine("Compile Failed (exit code {0})", compilerProcess.ExitCode);
+                            return 1;
+                        }
+                    }
+                }
 
                 Console.WriteLine("TotalTime Time: {0} secs",
                     (float)(Stopwatch.GetTimestamp() - startTime) / (float)Stopwatch.Frequency);
@@ -176,6 +257,20 @@ namespace CSharpToD
             {
                 Console.WriteLine("Error: {0}", e.Message);
                 return 1;
+            }
+            catch(AlreadyPrintedErrorException e)
+            {
+                return 1;
+            }
+        }
+        
+        static void TaskScheduler_UnobservedTaskException(object sender, UnobservedTaskExceptionEventArgs args)
+        {
+            ErrorMessageException errorMessageException = args.Exception.InnerException as ErrorMessageException;
+            if(errorMessageException != null)
+            {
+                Console.WriteLine("Error: {0}", errorMessageException.Message);
+                Environment.Exit(1);
             }
         }
 
@@ -198,6 +293,53 @@ namespace CSharpToD
                 conversionRoot = newConversionRoot;
             }
         }
+
+        static String FindProgram(String name)
+        {
+            string exeName   = name + ".exe";
+            string batchName = name + ".bat";
+            string cmdName   = name + ".cmd";
+
+            string PATH = Environment.GetEnvironmentVariable("PATH");
+            int startOfNextPath = 0;
+            for(int i = 0; ; i++)
+            {
+                if(i >= PATH.Length || PATH[i] == ';')
+                {
+                    if (i > startOfNextPath)
+                    {
+                        String exePath = PATH.Substring(startOfNextPath, i - startOfNextPath);
+                        {
+                            String exeNameFullPath = Path.Combine(exePath, exeName);
+                            if (File.Exists(exeNameFullPath))
+                            {
+                                return exeNameFullPath;
+                            }
+                        }
+                        {
+                            String batchNameFullPath = Path.Combine(exePath, batchName);
+                            if (File.Exists(batchNameFullPath))
+                            {
+                                return batchNameFullPath;
+                            }
+                        }
+                        {
+                            String cmdNameFullPath = Path.Combine(exePath, cmdName);
+                            if (File.Exists(cmdNameFullPath))
+                            {
+                                return cmdNameFullPath;
+                            }
+                        }
+                    }
+
+                    if (i >= PATH.Length)
+                    {
+                        return null;
+                    }
+                    startOfNextPath = i + 1;
+                }
+            }
+        }
     }
     static class TaskManager
     {
@@ -209,7 +351,8 @@ namespace CSharpToD
                 taskQueue.Enqueue(task);
             }
         }
-        public static void WaitLoop()
+        // Returns: true on success, false if a task failed
+        public static bool WaitLoop()
         {
             while (true)
             {
@@ -218,11 +361,29 @@ namespace CSharpToD
                 {
                     if(taskQueue.Count == 0)
                     {
-                        return;
+                        return true;
                     }
                     task = taskQueue.Dequeue();
                 }
-                task.Wait();
+                try
+                {
+                    task.Wait();
+                }
+                catch(AggregateException e)
+                {
+                    ErrorMessageException errorMessageException = e.InnerException as ErrorMessageException;
+                    if(errorMessageException != null)
+                    {
+                        Console.WriteLine("Error: {0}", errorMessageException.Message);
+                        return false;
+                    }
+                    if(e.InnerException is AlreadyPrintedErrorException)
+                    {
+                        return false;
+                    }
+                    Console.WriteLine(e.InnerException);
+                    throw new AlreadyPrintedErrorException();
+                }
             }
         }
     }
@@ -241,27 +402,37 @@ namespace CSharpToD
             this.document = document;
         }
 
-        void Validate(IEnumerable<Diagnostic> diagnostics)
+        void Validate(String stage, IEnumerable<Diagnostic> diagnostics)
         {
             int errorCount = 0;
             int warningCount = 0;
-            foreach (Diagnostic diagnostic in syntaxTree.GetDiagnostics())
+            foreach (Diagnostic diagnostic in diagnostics)
             {
-                errorCount++;
                 if (diagnostic.Severity == DiagnosticSeverity.Error)
                 {
-                    Console.WriteLine("{0}: Error: {1}", document.FilePath, diagnostic.GetMessage());
-                    errorCount++;
+                    if (!CSharpToD.ignoreFileErrors)
+                    {
+                        Console.WriteLine("Error: {0}: {1}", document.FilePath, diagnostic.GetMessage());
+                        errorCount++;
+                    }
                 }
                 else if (diagnostic.Severity == DiagnosticSeverity.Warning)
                 {
-                    Console.WriteLine("{0}: Warning: {1}", document.FilePath, diagnostic.GetMessage());
+                    if (!CSharpToD.noWarnings)
+                    {
+                        Console.WriteLine("Warning: {0}: {1}", document.FilePath, diagnostic.GetMessage());
+                    }
                     warningCount++;
+                }
+                else if(diagnostic.Severity != DiagnosticSeverity.Hidden)
+                {
+                    Console.WriteLine("{0}: {1}: {2}", diagnostic.Severity, document.FilePath, diagnostic.GetMessage());
                 }
             }
             if (errorCount > 0)
             {
-                throw new ErrorMessageException("SyntaxError(s)");
+                throw new AlreadyPrintedErrorException();
+                //throw new ErrorMessageException(String.Format("{0} {1}Error(s)", errorCount, stage));
             }
         }
 
@@ -270,7 +441,7 @@ namespace CSharpToD
             //Console.WriteLine("[{0}] [DEBUG] Syntax tree loaded for '{1}'",
             //    Thread.CurrentThread.ManagedThreadId, document.FilePath);
             this.syntaxTree = task.Result;
-            Validate(syntaxTree.GetDiagnostics());
+            Validate("Syntax", syntaxTree.GetDiagnostics());
 
             TaskManager.AddTask(document.GetSemanticModelAsync().ContinueWith(SemanticTreeLoaded));
         }
@@ -279,7 +450,7 @@ namespace CSharpToD
             //Console.WriteLine("[{0}] Semantic model loaded for '{1}'",
             //    Thread.CurrentThread.ManagedThreadId, document.FilePath);
             this.semanticModel = task.Result;
-            Validate(semanticModel.GetDiagnostics());
+            Validate("Semantic", semanticModel.GetDiagnostics());
 
             new NamespaceMultiplexVisitor(this).Visit(syntaxTree.GetRoot());
             //Console.WriteLine("[{0}] Done processing '{1}'",
@@ -360,7 +531,11 @@ namespace CSharpToD
         public override void VisitNamespaceDeclaration(NamespaceDeclarationSyntax node)
         {
             string @namespace = node.Name.Identifier();
-            WorkspaceModels.AddNamespace(csharpFileModel, node);
+            WorkspaceModels.AddDecl(csharpFileModel, @namespace, node);
+        }
+        public override void VisitClassDeclaration(ClassDeclarationSyntax node)
+        {
+            WorkspaceModels.AddDecl(csharpFileModel, "", node);
         }
     }
 }
