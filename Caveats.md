@@ -53,36 +53,16 @@ a namespace, must be within the same conversion tree, so that cs2d can put them
 in the same D module.
 
 ### Example
-Every namespace could have a package.d file.  Inside that package.d file, it
-imports all the code.  The code is distinguished by the original project it
-appeared in.
-
-```
-// Suppose the namespace is System.Net
-/System/Net/package.d
-/System/Net/mscorelib.d // all code in the mscorlib project within the System.Net namespace.
-/System/Net/System.d    // all code in the System project within the System.Net namespace.
-```
-
-Because of this, I think cs2d should have a config file in the parent tree of all
-the .NET projects that it will be converting together.
 ```
 /mycode/cs2d.config
 /mycode/MyOrg/LibraryA/LibraryA.csproj // contains namespaces MyOrg and MyOrg.LibraryA
 /mycode/MyOrg/LibraryB/LibraryB.csproj // contains namespaces MyOrg and MyOrg.LibraryB
 
 // Converted Code
-/mycode/cs2d/MyOrg/package.d   // public import MyOrg.LibraryA, public import MyOrd.LibraryB
-/mycode/cs2d/MyOrg/LibraryA.d  // Code in LibraryA.csproj in the MyOrg namespace
-/mycode/cs2d/MyOrg/LibraryB.d  // Code in LibraryB.csproj in the MyOrg namespace
-
-/mycode/cs2d/MyOrg/LibraryA/package.d  // public import MyOrg.LibraryA.LibraryA
-/mycode/cs2d/MyOrg/LibraryA/LibraryA.d // Code in LibraryA.csproj in the MyOrg.LibraryA namespace
-
-/mycode/cs2d/MyOrg/LibraryB/package.d  // public import MyOrg.LibraryB.LibraryA
-/mycode/cs2d/MyOrg/LibraryB/LibraryB.d // Code in LibraryB.csproj in the MyOrg.LibraryB namespace
+/mycode/cs2d/MyOrg/package.d   // Code in MyOrg namespace
+/mycode/cs2d/MyOrg/LibraryA.d  // Code in MyOrg.LibraryA namespace
+/mycode/cs2d/MyOrg/LibraryB.d  // Code in MyOrg.LibraryB namespace
 ```
-
 
 The `internal` modifier
 --------------------------------------------------------------------------------
@@ -91,5 +71,33 @@ assembly only. However, cs2d has no concept of assemblies. So cs2d treats
 `internal` the same as `public`.  This should allow all converted code to work,
 but may cause extra types to be visible that were not intended to be.
 
+Struct Interfaces
+--------------------------------------------------------------------------------
+.NET structs can implement interfaces, but D interfaces cannot. The way .NET
+implements struct interfaces is through boxing.  Whenever a struct is assigned
+to an interface, a copy is created on the heap, this is called "boxing".
 
+To support this in D, every struct that implements .NET interfaces will have
+an extra type definition.  For exampe, if `SomeInterface` exists, the following
+C# code:
+```C#
+struct SomeStruct : SomeInterface
+{
+}
+```
+would be converted to the following D code:
+```D
+struct SomeStruct
+{
+}
+class __Boxed__SomeStruct : SomeInterface
+{
+    SomeStruct value;
+    alias this value;
+}
+```
 
+Empty Enums
+--------------------------------------------------------------------------------
+.NET supports enum definitions with no values, but D does not.  If this happens,
+a value of `__no_values__` will be inserted.

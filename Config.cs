@@ -322,4 +322,4 @@ namespace CSharpToD
             return str.Substring(startOffset, peelLimit - startOffset);
         }
     }
-    }
+}

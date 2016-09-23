@@ -175,6 +175,7 @@ namespace CSharpToD
 
         static readonly Dictionary<string, string> PrimitiveSystemTypeMap = new Dictionary<string, string>
         {
+            /*
             {"Byte"  , "ubyte" },
             {"SByte" , "byte" },
             {"Char"  , "wchar" },
@@ -184,6 +185,7 @@ namespace CSharpToD
             {"Int32" , "int" },
             {"UInt64", "ulong" },
             {"Int64" , "long" },
+            */
             {"Object", "DotNetObject" },
             {"Exception", "DotNetException" },
         };
@@ -233,43 +235,51 @@ namespace CSharpToD
             WriteDlangTypeName(@namespace, typeDecl.Identifier.ToString(), genericTypeCount);
         }
 
-        public void WriteDlangTypeName(ITypeSymbol typeSymbol)
+        public void WriteDlangType(ITypeSymbol typeSymbol)
         {
-            WriteDlangTypeName(typeSymbol, false);
+            WriteDlangType(typeSymbol, false);
         }
-        public void WriteDlangTypeName(ITypeSymbol typeSymbol, bool printingGenericType)
+        public void WriteDlangType(ITypeSymbol typeSymbol, bool printingGenericType)
         {
-            INamedTypeSymbol namedTypeSymbol = typeSymbol as INamedTypeSymbol;
-            int genericTypeCount = 0;
-            if (namedTypeSymbol != null)
+            if (typeSymbol.TypeKind == TypeKind.Array)
             {
-                genericTypeCount = namedTypeSymbol.Arity;
+                WriteDlangType(((IArrayTypeSymbol)typeSymbol).ElementType, false);
+                Write("[]");
             }
-
-            if (!printingGenericType)
+            else
             {
-                if (typeSymbol.ContainingType != null)
+                INamedTypeSymbol namedTypeSymbol = typeSymbol as INamedTypeSymbol;
+                int genericTypeCount = 0;
+                if (namedTypeSymbol != null)
                 {
-                    WriteDlangTypeName(typeSymbol.ContainingType);
-                    Write(".");
+                    genericTypeCount = namedTypeSymbol.Arity;
                 }
-            }
 
-            String containingNamespace = (typeSymbol.ContainingNamespace == null) ?
-                "" : typeSymbol.ContainingNamespace.Name;
-
-            String dlangTypeName = DotNetToD(containingNamespace, typeSymbol.Name, (uint)genericTypeCount);
-            Write(dlangTypeName);
-            if (genericTypeCount > 0)
-            {
-                Write("{0}!(", namedTypeSymbol.Arity);
-                bool atFirst = true;
-                foreach (ITypeSymbol genericTypeArg in namedTypeSymbol.TypeArguments)
+                if (!printingGenericType)
                 {
-                    if (atFirst) { atFirst = false; } else { Write(","); }
-                    WriteDlangTypeName(genericTypeArg, true);
+                    if (typeSymbol.ContainingType != null)
+                    {
+                        WriteDlangType(typeSymbol.ContainingType, false);
+                        Write(".");
+                    }
                 }
-                Write(")");
+
+                String containingNamespace = (typeSymbol.ContainingNamespace == null) ?
+                    "" : typeSymbol.ContainingNamespace.Name;
+
+                String dlangTypeName = DotNetToD(containingNamespace, typeSymbol.Name, (uint)genericTypeCount);
+                Write(dlangTypeName);
+                if (genericTypeCount > 0)
+                {
+                    Write("{0}!(", namedTypeSymbol.Arity);
+                    bool atFirst = true;
+                    foreach (ITypeSymbol genericTypeArg in namedTypeSymbol.TypeArguments)
+                    {
+                        if (atFirst) { atFirst = false; } else { Write(","); }
+                        WriteDlangType(genericTypeArg, true);
+                    }
+                    Write(")");
+                }
             }
         }
     }

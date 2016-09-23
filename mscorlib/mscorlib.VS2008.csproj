@@ -32,7 +32,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="..\..\coreclr\src\mscorlib\src\**\*.cs" Exclude="..\..\coreclr\src\mscorlib\src\System\Runtime\InteropServices\NonPortable.cs" />
+    <Compile Include="..\..\coreclr\src\mscorlib\src\**\*.cs" Exclude="..\..\coreclr\src\mscorlib\src\System\Runtime\InteropServices\NonPortable.cs;..\..\coreclr\src\mscorlib\src\System\Globalization\EncodingDataItem.Unix.cs;..\..\coreclr\src\mscorlib\src\System\Globalization\EncodingTable.Unix.cs" />
     <!-- Independent Source Files -->
     <!--
     <Compile Include="..\..\coreclr\src\mscorlib\src\System\IDisposable.cs" />

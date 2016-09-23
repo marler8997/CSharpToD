@@ -326,7 +326,7 @@ int main(string[] args)
                         uint lastIndex = (uint)namespaceAndType.Value.Count - 1;
                         foreach(ITypeSymbol typeSymbol in namespaceAndType.Value)
                         {
-                            writer.WriteDlangTypeName(typeSymbol);
+                            writer.WriteDlangType(typeSymbol);
                             if(typeIndex < lastIndex)
                             {
                                 writer.WriteLine(",");
@@ -536,14 +536,7 @@ int main(string[] args)
                 WriteAttributes(writer, typeDecl.AttributeLists);
             }
 
-            if (modifiers.dlangVisibility == null)
-            {
-                // default visibility for classes in in C# is internal, default in D is public
-                // since internal has no meaning after conversion to D, it must be public.
-                // Since default in D is public, there is no need for a modifier.
-                //writer.Write("private ");
-            }
-            else
+            if (modifiers.dlangVisibility != null)
             {
                 writer.Write(modifiers.dlangVisibility);
                 writer.Write(" ");
@@ -573,43 +566,15 @@ int main(string[] args)
                     writer.Write("struct ");
                     break;
             }
-            writer.WriteDlangTypeName(generator.@namespace, typeDecl);
-            if (typeDecl.TypeParameterList != null)
-            {
-                writer.Write("(");
-                bool atFirst = true;
-                foreach (TypeParameterSyntax typeParam in typeDecl.TypeParameterList.Parameters)
-                {
-                    if (atFirst) { atFirst = false; } else { writer.Write(","); }
-                    writer.Write(typeParam.Identifier.Text);
-                }
-                writer.Write(")");
-            }
+            WriteTypeDeclName(typeDecl);
             // TODO: loop through base list of all partial classes
-            if (typeDecl.BaseList != null)
+            if (typeDeclType != TypeDeclType.Struct)
             {
-                writer.Write(" : ");
-                bool atFirst = true;
-                foreach (BaseTypeSyntax type in typeDecl.BaseList.Types)
+                if (typeDecl.BaseList != null)
                 {
-                    if (atFirst) { atFirst = false; } else { writer.Write(", "); }
-
-                    TypeInfo typeInfo = currentFileModel.semanticModel.GetTypeInfo(type.Type);
-                    if(typeInfo.Type == null)
-                    {
-                        throw new InvalidOperationException();
-                    }
-
-                    INamedTypeSymbol namedType = (INamedTypeSymbol)typeInfo.Type;
-                    writer.WriteDlangTypeName(namedType);
+                    WriteBaseList(typeDecl.BaseList);
                 }
-            }
-            if (typeDecl.ConstraintClauses.HasItems())
-            {
-                foreach (TypeParameterConstraintClauseSyntax constraint in typeDecl.ConstraintClauses)
-                {
-                    writer.WriteCommentedInline(constraint.GetText().ToString().Trim());
-                }
+                WriteConstraints(typeDecl);
             }
             writer.WriteLine();
             writer.WriteLine("{");
@@ -655,9 +620,83 @@ int main(string[] args)
 
             writer.Untab();
             writer.WriteLine("}");
+
+            //
+            // Generate the boxed class if the struct implements interfaces
+            //
+            if (typeDeclType == TypeDeclType.Struct)
+            {
+                if (typeDecl.BaseList != null)
+                {
+                    if (modifiers.dlangVisibility != null)
+                    {
+                        writer.Write(modifiers.dlangVisibility);
+                        writer.Write(" ");
+                    }
+                    writer.Write("class ");
+                    writer.Write("__Boxed__");
+                    WriteTypeDeclName(typeDecl);
+                    WriteBaseList(typeDecl.BaseList);
+                    WriteConstraints(typeDecl);
+                    writer.WriteLine();
+                    writer.WriteLine("{");
+                    writer.Tab();
+                    {
+                        writer.WriteDlangType(currentFileModel.semanticModel.GetDeclaredSymbol(typeDecl));
+                        writer.WriteLine(" value;");
+                        writer.WriteLine("alias value this;");
+                    }
+                    writer.Untab();
+                    writer.WriteLine("}");
+                }
+            }
         }
 
-        public override void VisitClassDeclaration(ClassDeclarationSyntax node)
+        void WriteTypeDeclName(TypeDeclarationSyntax typeDecl)
+        {
+            writer.WriteDlangTypeName(generator.@namespace, typeDecl);
+            if (typeDecl.TypeParameterList != null)
+            {
+                writer.Write("(");
+                bool atFirst = true;
+                foreach (TypeParameterSyntax typeParam in typeDecl.TypeParameterList.Parameters)
+                {
+                    if (atFirst) { atFirst = false; } else { writer.Write(","); }
+                    writer.Write(typeParam.Identifier.Text);
+                }
+                writer.Write(")");
+            }
+        }
+        void WriteBaseList(BaseListSyntax baseList)
+        {
+            writer.Write(" : ");
+            bool atFirst = true;
+            foreach (BaseTypeSyntax type in baseList.Types)
+            {
+                if (atFirst) { atFirst = false; } else { writer.Write(", "); }
+
+                TypeInfo typeInfo = currentFileModel.semanticModel.GetTypeInfo(type.Type);
+                if (typeInfo.Type == null)
+                {
+                    throw new InvalidOperationException();
+                }
+
+                INamedTypeSymbol namedType = (INamedTypeSymbol)typeInfo.Type;
+                writer.WriteDlangType(namedType);
+            }
+        }
+        void WriteConstraints(TypeDeclarationSyntax typeDecl)
+        {
+            if (typeDecl.ConstraintClauses.HasItems())
+            {
+                foreach (TypeParameterConstraintClauseSyntax constraint in typeDecl.ConstraintClauses)
+                {
+                    writer.WriteCommentedInline(constraint.GetText().ToString().Trim());
+                }
+            }
+        }
+
+public override void VisitClassDeclaration(ClassDeclarationSyntax node)
         {
             VisitTypeDeclarationSyntax(TypeDeclType.Class, node);
         }
@@ -680,10 +719,80 @@ int main(string[] args)
 
             writer.WriteLine("// TODO: generate delegate");
         }
-        public override void VisitEnumDeclaration(EnumDeclarationSyntax node)
+
+        public override void VisitEnumDeclaration(EnumDeclarationSyntax enumDecl)
         {
-            writer.WriteLine("// TODO: generate enum '{0}'", node.Identifier.Text);
+            foreach (AttributeListSyntax attrList in enumDecl.AttributeLists)
+            {
+                writer.WriteIgnored(attrList.GetText());
+            }
+
+            ModifierCategories modifiers = new ModifierCategories(enumDecl.Modifiers);
+            if(modifiers.@abstract || modifiers.partial || modifiers.@sealed || modifiers.@static || modifiers.@unsafe)
+            {
+                throw new InvalidOperationException();
+            }
+            if(modifiers.dlangVisibility != null)
+            {
+                writer.Write(modifiers.dlangVisibility);
+                writer.Write(" ");
+            }
+
+            writer.Write("enum ");
+            writer.Write(enumDecl.Identifier.Text);
+            if (enumDecl.BaseList != null)
+            {
+                writer.WriteCommentedInline("todo: implement : <base-type>");
+                //WriteBaseList(enumDecl.BaseList);
+            }
+            if (enumDecl.Members.Count == 0)
+            {
+                writer.WriteLine("{__no_values__}");
+            }
+            else
+            {
+                writer.WriteLine();
+                writer.WriteLine("{");
+                writer.Tab();
+                foreach (EnumMemberDeclarationSyntax enumMember in enumDecl.Members)
+                {
+                    foreach (AttributeListSyntax attrList in enumMember.AttributeLists)
+                    {
+                        writer.WriteIgnored(attrList.GetText());
+                    }
+                    writer.Write(GetEnumName(enumMember.Identifier.Text));
+                    if (enumMember.EqualsValue != null)
+                    {
+                        writer.WriteCommentedInline("todo: implement = expression");
+                        //writer.Write(" = ");
+                        //WriteExpression(enumMember.EqualsValue.Value);
+                    }
+                    writer.WriteLine(",");
+                }
+                writer.Untab();
+                writer.WriteLine("}");
+            }
         }
+
+        static readonly Dictionary<string, string> EnumNameMap = new Dictionary<string, string>
+        {
+            {"function", "function_" },
+        };
+        static String GetEnumName(String name)
+        {
+            String mappedName;
+            if(EnumNameMap.TryGetValue(name, out mappedName))
+            {
+                return mappedName;
+            }
+            return name;
+        }
+
+        void WriteExpression(ExpressionSyntax expression)
+        {
+            throw new NotImplementedException();
+        }
+
 
 
         public override void VisitFieldDeclaration(FieldDeclarationSyntax node)
@@ -772,7 +881,11 @@ int main(string[] args)
 
     struct ModifierCategories
     {
+        // default visibility for classes in in C# is internal, default in D is public
+        // since internal has no meaning after conversion to D, it must be public.
+        // Since default in D is public, there is no need for a modifier.
         public string dlangVisibility;
+
         public bool partial;
         public bool @static;
         public bool @abstract;

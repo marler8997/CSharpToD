@@ -14,6 +14,7 @@ namespace Example1
         static void Main(string[] args)
         {
             Dog doc = new Dog();
+            StructInterfaceBoxing.StructInterfaceBoxingExample.Run();
         }
     }
 }
