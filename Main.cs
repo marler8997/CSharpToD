@@ -41,6 +41,9 @@ namespace CSharpToD
         public static String mscorlibPath;
         public static Config config;
 
+        public static Boolean log;
+        public static String logDirectory;
+
         static void Usage()
         {
             Console.WriteLine("csharptod [--dir <project-root>]");
@@ -65,6 +68,10 @@ namespace CSharpToD
                     if(arg.Equals("--clean"))
                     {
                         clean = true;
+                    }
+                    else if(arg.Equals("--log"))
+                    {
+                        log = true;
                     }
                     else if(arg.Equals("--no-warnings"))
                     {
@@ -180,6 +187,12 @@ namespace CSharpToD
                     Directory.CreateDirectory(generatedCodePath);
                 }
 
+                if(log)
+                {
+                    logDirectory = Path.Combine(generatedCodePath, "logs");
+                    Directory.CreateDirectory(logDirectory);
+                }
+
                 MSBuildWorkspace workspace = MSBuildWorkspace.Create(config.msbuildProperties);
                 workspace.LoadMetadataForReferencedProjects = true;
                 workspace.SkipUnrecognizedProjects = false;
@@ -216,9 +229,7 @@ namespace CSharpToD
                     return 1; // fail
                 }
 
-                DBuildGenerator.MakeDProjectFile(config, projectModelsArray);
-
-
+                DlangBuildGenerator.MakeDProjectFile(config, projectModelsArray);
 
                 //
                 // Compile D Code
@@ -258,7 +269,7 @@ namespace CSharpToD
                 Console.WriteLine("Error: {0}", e.Message);
                 return 1;
             }
-            catch(AlreadyPrintedErrorException e)
+            catch(AlreadyPrintedErrorException)
             {
                 return 1;
             }
@@ -354,6 +365,8 @@ namespace CSharpToD
         // Returns: true on success, false if a task failed
         public static bool WaitLoop()
         {
+            bool success = true;
+
             while (true)
             {
                 Task task;
@@ -361,7 +374,7 @@ namespace CSharpToD
                 {
                     if(taskQueue.Count == 0)
                     {
-                        return true;
+                        return success;
                     }
                     task = taskQueue.Dequeue();
                 }
@@ -371,91 +384,21 @@ namespace CSharpToD
                 }
                 catch(AggregateException e)
                 {
+                    success = false;
                     ErrorMessageException errorMessageException = e.InnerException as ErrorMessageException;
-                    if(errorMessageException != null)
+                    if (errorMessageException != null)
                     {
                         Console.WriteLine("Error: {0}", errorMessageException.Message);
-                        return false;
                     }
-                    if(e.InnerException is AlreadyPrintedErrorException)
+                    else if (e.InnerException is AlreadyPrintedErrorException)
                     {
-                        return false;
                     }
-                    Console.WriteLine(e.InnerException);
-                    throw new AlreadyPrintedErrorException();
+                    else
+                    {
+                        Console.WriteLine(e.InnerException);
+                    }
                 }
             }
-        }
-    }
-
-
-    public class CSharpFileModel
-    {
-        public readonly ProjectModels containingProject;
-        public readonly Document document;
-        SyntaxTree syntaxTree;
-        public SemanticModel semanticModel;
-
-        public CSharpFileModel(ProjectModels containingProject, Document document)
-        {
-            this.containingProject = containingProject;
-            this.document = document;
-        }
-
-        void Validate(String stage, IEnumerable<Diagnostic> diagnostics)
-        {
-            int errorCount = 0;
-            int warningCount = 0;
-            foreach (Diagnostic diagnostic in diagnostics)
-            {
-                if (diagnostic.Severity == DiagnosticSeverity.Error)
-                {
-                    if (!CSharpToD.ignoreFileErrors)
-                    {
-                        Console.WriteLine("Error: {0}: {1}", document.FilePath, diagnostic.GetMessage());
-                        errorCount++;
-                    }
-                }
-                else if (diagnostic.Severity == DiagnosticSeverity.Warning)
-                {
-                    if (!CSharpToD.noWarnings)
-                    {
-                        Console.WriteLine("Warning: {0}: {1}", document.FilePath, diagnostic.GetMessage());
-                    }
-                    warningCount++;
-                }
-                else if(diagnostic.Severity != DiagnosticSeverity.Hidden)
-                {
-                    Console.WriteLine("{0}: {1}: {2}", diagnostic.Severity, document.FilePath, diagnostic.GetMessage());
-                }
-            }
-            if (errorCount > 0)
-            {
-                throw new AlreadyPrintedErrorException();
-                //throw new ErrorMessageException(String.Format("{0} {1}Error(s)", errorCount, stage));
-            }
-        }
-
-        public void SyntaxTreeLoaded(Task<SyntaxTree> task)
-        {
-            //Console.WriteLine("[{0}] [DEBUG] Syntax tree loaded for '{1}'",
-            //    Thread.CurrentThread.ManagedThreadId, document.FilePath);
-            this.syntaxTree = task.Result;
-            Validate("Syntax", syntaxTree.GetDiagnostics());
-
-            TaskManager.AddTask(document.GetSemanticModelAsync().ContinueWith(SemanticTreeLoaded));
-        }
-        public void SemanticTreeLoaded(Task<SemanticModel> task)
-        {
-            //Console.WriteLine("[{0}] Semantic model loaded for '{1}'",
-            //    Thread.CurrentThread.ManagedThreadId, document.FilePath);
-            this.semanticModel = task.Result;
-            Validate("Semantic", semanticModel.GetDiagnostics());
-
-            new NamespaceMultiplexVisitor(this).Visit(syntaxTree.GetRoot());
-            //Console.WriteLine("[{0}] Done processing '{1}'",
-            //    Thread.CurrentThread.ManagedThreadId, document.FilePath);
-            containingProject.FileProcessed();
         }
     }
 

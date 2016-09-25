@@ -1,5 +1,5 @@
 
-namespace Example1
+namespace Inheritance
 {
     class Animal
     {
@@ -14,7 +14,7 @@ namespace Example1
         static void Main(string[] args)
         {
             Dog doc = new Dog();
-            StructInterfaceBoxing.StructInterfaceBoxingExample.Run();
+            //StructInterfaceBoxing.StructInterfaceBoxingExample.Run();
         }
     }
 }

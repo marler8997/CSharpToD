@@ -42,7 +42,7 @@ namespace AnotherNamespace
     }
 }
 
-static class StaticNoNamespaceClass
+public static class StaticNoNamespaceClass
 {
     public class InsideStaticNoNamespaceClass
     {
