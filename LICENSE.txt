@@ -1,0 +1,10 @@
+
+Copyright (C) 2016 Jonathan Marler
+
+Everyone is permitted to use and distribute verbatim or modifed copies of this
+project.
+   
+If this project is helpful, giving credit to this project is encouraged. Anyone
+who makes enhancements to this project are also encouraged to provide them to
+the current maintainers.  These "encouragements" are not required, just
+appreciated.
