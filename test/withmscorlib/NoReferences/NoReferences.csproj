@@ -8,7 +8,7 @@
     <ProjectGuid>{5FD707CF-734F-4995-8C22-BFBBD9D1E02D}</ProjectGuid>
     <OutputType>Library</OutputType>
     <AppDesignerFolder>Properties</AppDesignerFolder>
-    <AssemblyName>Example1</AssemblyName>
+    <AssemblyName>NoReferences</AssemblyName>
     <TargetFrameworkVersion>v3.5</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <StartupObject>

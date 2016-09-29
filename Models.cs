@@ -9,94 +9,24 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace CSharpToD
 {
-    public static class WorkspaceModels
-    {
-        static readonly Dictionary<string, DlangGenerator> NamespaceGeneratorMap
-            = new Dictionary<string, DlangGenerator>();
-        internal static IEnumerable<DlangGenerator> Generators { get { return NamespaceGeneratorMap.Values; } }
-
-        // Assumption: called inside lock(NamespaceGeneratorMap)
-        static DlangGenerator GetOrCreatGenerator()
-        {
-            return GetOrCreatGenerator("");
-        }
-        // Assumption: called inside lock(NamespaceGeneratorMap)
-        static DlangGenerator GetOrCreatGenerator(String @namespace)
-        {
-            DlangGenerator generator;
-            if (!NamespaceGeneratorMap.TryGetValue(@namespace, out generator))
-            {
-                generator = new DlangGenerator(@namespace);
-                NamespaceGeneratorMap.Add(@namespace, generator);
-                //Console.WriteLine("[DEBUG] New Namespace '{0}'", @namespace);
-            }
-            return generator;
-
-        }
-
-        public static void AddAttributeLists(CSharpFileModel fileModel, SyntaxList<AttributeListSyntax> attributeLists)
-        {
-            lock (NamespaceGeneratorMap)
-            {
-                GetOrCreatGenerator().AddAttributeLists(fileModel, attributeLists);
-            }
-        }
-        public static void AddDecl(CSharpFileModel fileModel, String @namespace, MemberDeclarationSyntax node)
-        {
-            lock (NamespaceGeneratorMap)
-            {
-                GetOrCreatGenerator(@namespace).AddDecl(fileModel, node);
-            }
-        }
-
-        // No need to lock in this methid, all other tasks should be done
-        public static void AddCodeGenerationTasks(List<IncludeSource> includeSources)
-        {
-            // Add Include Sources
-            foreach (IncludeSource includeSource in includeSources)
-            {
-                GetOrCreatGenerator(includeSource.@namespace).AddIncludeFile(includeSource.filename);
-            }
-
-            // Determine generator filenames
-            // If a module will have submodules, then it will need to
-            // be put in a package file
-            foreach (var generator in NamespaceGeneratorMap.Values)
-            {
-                var @namespace = generator.@namespace;
-                if (@namespace.Length > 0)
-                {
-                    foreach (var compare in NamespaceGeneratorMap.Values)
-                    {
-                        if (generator != compare && compare.@namespace.StartsWith(@namespace))
-                        {
-                            generator.SetPutInPackage(true);
-                            break;
-                        }
-                    }
-                }
-            }
-
-            foreach (var generator in NamespaceGeneratorMap.Values)
-            {
-                var task = new Task(generator.Finish);
-                task.Start();
-                TaskManager.AddTask(task);
-            }
-        }
-    }
-
     public class ProjectModels
     {
+        public readonly ProjectConfig config;
         public readonly String fileFullPath;
         public readonly String projectDirectory;
         public Project project;
+        public String assemblyPackageName;
+        public OutputType outputType;
 
         readonly object fileToProcessLockObject = new object();
         uint filesToProcess;
 
-        public ProjectModels(String fileFullPath)
+        public readonly Dictionary<string, DlangGenerator> namespaceGeneratorMap =
+            new Dictionary<string, DlangGenerator>();
+
+        public ProjectModels(ProjectConfig config, String fileFullPath)
         {
+            this.config = config;
             this.fileFullPath = fileFullPath;
             this.projectDirectory = Path.GetDirectoryName(fileFullPath);
         }
@@ -104,7 +34,18 @@ namespace CSharpToD
         {
             project = task.Result;
 
-            Console.WriteLine("[{0}] Loaded project '{1}'", Thread.CurrentThread.ManagedThreadId, fileFullPath);
+            this.assemblyPackageName = CSharpToD.GetAssemblyPackageName(project.AssemblyName);
+            if(config.outputType.HasValue)
+            {
+                this.outputType = config.outputType.Value;
+            }
+            else
+            {
+                throw new NotImplementedException();
+            }
+
+            Console.WriteLine("[{0}] Loaded project (AssemblyPackage='{1}', ProjectFile='{2}')",
+                Thread.CurrentThread.ManagedThreadId, assemblyPackageName, fileFullPath);
 
             //
             // Check Source Defines
@@ -151,6 +92,31 @@ namespace CSharpToD
                 TaskManager.AddTask(document.GetSyntaxTreeAsync().ContinueWith(fileModel.SyntaxTreeLoaded));
             }
         }
+        // Assumption: called inside lock(namespaceGeneratorMap)
+        DlangGenerator GetOrCreatGenerator(String @namespace)
+        {
+            DlangGenerator generator;
+            if (!namespaceGeneratorMap.TryGetValue(@namespace, out generator))
+            {
+                generator = new DlangGenerator(this, @namespace);
+                namespaceGeneratorMap.Add(@namespace, generator);
+            }
+            return generator;
+        }
+        public void AddAttributeLists(CSharpFileModel fileModel, SyntaxList<AttributeListSyntax> attributeLists)
+        {
+            lock (namespaceGeneratorMap)
+            {
+                GetOrCreatGenerator("").AddAttributeLists(fileModel, attributeLists);
+            }
+        }
+        public void AddDecl(CSharpFileModel fileModel, String @namespace, MemberDeclarationSyntax decl)
+        {
+            lock (namespaceGeneratorMap)
+            {
+                GetOrCreatGenerator(@namespace).AddDecl(fileModel, decl);
+            }
+        }
 
         internal void FileProcessed()
         {
@@ -164,13 +130,32 @@ namespace CSharpToD
             }
             if (filesToProcess == 0)
             {
-                Console.WriteLine("[{0}] All {1} files in project '{2}' have been processed",
-                    Thread.CurrentThread.ManagedThreadId, project.DocumentIds.Count, project.FilePath);
-                /*
-                Task finishGeneratorsTask = new Task(FinishGenerators);
-                finishGeneratorsTask.Start();
-                TaskManager.AddTask(finishGeneratorsTask);
-                */
+                Console.WriteLine("[{0}] All {1} files in project '{2}' have been processed, starting code generation",
+                    Thread.CurrentThread.ManagedThreadId, project.DocumentIds.Count, assemblyPackageName);
+
+                //
+                // Determine Generator Filenames
+                // If a module will have submodules, then it will ned to be put in a package file
+                //
+                foreach(var generator in namespaceGeneratorMap.Values)
+                {
+                    var csharpNamespace = generator.csharpNamespace;
+                    foreach(var compare in namespaceGeneratorMap.Values)
+                    {
+                        if(generator != compare && compare.csharpNamespace.StartsWith(csharpNamespace))
+                        {
+                            generator.SetPutInPackage(true);
+                            break;
+                        }
+                    }
+                }
+
+                foreach(var generator in namespaceGeneratorMap.Values)
+                {
+                    var task = new Task(generator.Finish);
+                    task.Start();
+                    TaskManager.AddTask(task);
+                }
             }
         }
     }

@@ -5,12 +5,35 @@ using System.Text;
 
 namespace CSharpToD
 {
-    public struct ProjectConfig
+    delegate void DirectiveBlockParser(Config config, UInt32 lineNumber, String line);
+    public class ProjectConfig
     {
         public readonly string projectFile;
+        public OutputType? outputType;
+        public List<string> typesToRemove = new List<string>();
         public ProjectConfig(string projectFile)
         {
             this.projectFile = projectFile;
+            this.outputType = OutputType.Library;
+        }
+        public void ProcessBlockLine(Config config, UInt32 lineNumber, String line)
+        {
+            if (line.StartsWith("OutputType "))
+            {
+                String outputTypeString = config.ProcessString(lineNumber,
+                    config.OneArg("OutputType", lineNumber, line, (uint)"OutputType ".Length, "output type"));
+                this.outputType = (OutputType)Enum.Parse(typeof(OutputType), outputTypeString);
+            }
+            else if(line.StartsWith("Remove "))
+            {
+                typesToRemove.Add(config.ProcessString(lineNumber,
+                    config.OneArg("Remove", lineNumber, line, (uint)"Remove ".Length, "type")));
+            }
+            else
+            {
+                throw new ErrorMessageException(String.Format("{0}({1}): unknown directive inside project block: \"{2}\"",
+                    config.filename, lineNumber, line));
+            }
         }
     }
     public struct IncludeSource
@@ -32,7 +55,6 @@ namespace CSharpToD
     {
         public readonly String filename;
         public readonly OutputType outputType;
-        public readonly String outputName;
         public readonly Boolean noMscorlib;
         public readonly List<string> includePaths = new List<string>();
         public readonly List<string> libraries = new List<string>();
@@ -40,12 +62,15 @@ namespace CSharpToD
         public readonly List<ProjectConfig> projects = new List<ProjectConfig>();
         public readonly Dictionary<string, string> vars = new Dictionary<string, string>();
         public readonly Dictionary<string, string> msbuildProperties = new Dictionary<string, string>();
+        public readonly Dictionary<string, string> assemblyPackageOverrides = new Dictionary<string, string>();
         public readonly List<string> sourceDefines = new List<string>();
 
         public Config(String filename)
         {
             this.filename = filename;
-            using (StreamReader reader = new StreamReader(new FileStream(filename, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)))
+            DirectiveBlockParser nextBlockParser = null;
+            using (StreamReader reader = new StreamReader(new FileStream(
+                filename, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)))
             {
                 uint lineNumber = 0;
                 while(true)
@@ -62,27 +87,53 @@ namespace CSharpToD
                         continue;
                     }
 
+                    // Handle a block
+                    if(line.Length == 1 && line[0] == '{')
+                    {
+                        if(nextBlockParser == null)
+                        {
+                            throw new ErrorMessageException(String.Format(
+                                "{0}({1}): '{{' block '}}' ProjectConfig configappeared underneath an invalid directive",
+                                filename, lineNumber));
+                        }
+                        while(true)
+                        {
+                            line = reader.ReadLine();
+                            if(line == null)
+                            {
+                                throw new ErrorMessageException(String.Format(
+                                    "{0}({1}): config ended inside a '{{' block '}}'",
+                                    filename, lineNumber));
+                            }
+                            lineNumber++;
+                            line = line.Trim();
+                            if (line.Length == 0 || line[0] == '#')
+                            {
+                                continue;
+                            }
+                            if(line.Length == 1 && line[0] == '}')
+                            {
+                                break;
+                            }
+                            nextBlockParser(this, lineNumber, line);
+                        }
+                        nextBlockParser = null;
+                        continue;
+                    }
+
+                    nextBlockParser = null; // Important
                     if(line.StartsWith("Project "))
                     {
                         String projectFile = OneArg("Project", lineNumber, line, (uint)"Project ".Length, "project");
                         projectFile = ProcessString(lineNumber, projectFile);
                         projectFile = projectFile.Replace('/', Path.DirectorySeparatorChar);
-                        projects.Add(new ProjectConfig(projectFile));
+                        var projectConfig = new ProjectConfig(projectFile);
+                        nextBlockParser = projectConfig.ProcessBlockLine;
+                        projects.Add(projectConfig);
                     }
                     else if(line.StartsWith("NoMscorlib"))
                     {
                         this.noMscorlib = true;
-                    }
-                    else if(line.StartsWith("OutputType "))
-                    {
-                        String outputTypeString = ProcessString(lineNumber,
-                            OneArg("OutputType", lineNumber, line, (uint)"OutputType ".Length, "output type"));
-                        this.outputType = (OutputType)Enum.Parse(typeof(OutputType), outputTypeString);
-                    }
-                    else if(line.StartsWith("OutputName "))
-                    {
-                        this.outputName = ProcessString(lineNumber,
-                            OneArg("OutputType", lineNumber, line, (uint)"OutputType ".Length, "output type"));
                     }
                     else if(line.StartsWith("IncludePath "))
                     {
@@ -124,6 +175,15 @@ namespace CSharpToD
                         msbuildProperties.Add(varName, value);
                         //Console.WriteLine("\"{0}\" = \"{1}\"", varName, value);
                     }
+                    else if(line.StartsWith("AssemblyPackageOverride "))
+                    {
+                        String assemblyName;
+                        String packageName = TwoArgs(out assemblyName, "AssemblyPackageOverride", lineNumber, line,
+                            (uint)"AssemblyPackageOverride ".Length, "assembly", "package");
+                        assemblyName = ProcessString(lineNumber, assemblyName);
+                        packageName = ProcessString(lineNumber, packageName);
+                        assemblyPackageOverrides.Add(assemblyName, packageName);
+                    }
                     else if(line.StartsWith("SourceDefine "))
                     {
                         sourceDefines.Add(ProcessString(lineNumber,
@@ -131,14 +191,14 @@ namespace CSharpToD
                     }
                     else
                     {
-                        throw new ErrorMessageException(String.Format("{0}({1}): unknown directive: {2}",
+                        throw new ErrorMessageException(String.Format("{0}({1}): unknown directive: \"{2}\"",
                             filename, lineNumber, line));
                     }
                 }
             }
         }
 
-        String OneArg(String directive, UInt32 lineNumber, String line, UInt32 offset, String argName)
+        public String OneArg(String directive, UInt32 lineNumber, String line, UInt32 offset, String argName)
         {
             String rest;
             String argString = line.Peel((int)offset, out rest);
@@ -154,7 +214,7 @@ namespace CSharpToD
             }
             return argString;
         }
-        String TwoArgs(out String outArg1, String directive, UInt32 lineNumber, String line, UInt32 offset, String arg1Name, String arg2Name)
+        public String TwoArgs(out String outArg1, String directive, UInt32 lineNumber, String line, UInt32 offset, String arg1Name, String arg2Name)
         {
             String rest;
             outArg1 = line.Peel((int)offset, out rest);
@@ -172,7 +232,7 @@ namespace CSharpToD
             return arg2;
         }
 
-        String ProcessString(UInt32 lineNumber, String str)
+        public String ProcessString(UInt32 lineNumber, String str)
         {
             int indexOfFirstDollar = str.IndexOf('$');
             if (indexOfFirstDollar < 0)
@@ -236,90 +296,6 @@ namespace CSharpToD
                     }
                 }
             }
-        }
-    }
-
-    public static class StringExtensions
-    {
-        /// <summary>
-        /// Peel the next non-whitespace substring from the front of the given string.
-        /// </summary>
-        /// <param name="str">The string to peel from</param>
-        /// <param name="rest">The rest of the string after the peel</param>
-        /// <returns>The peeled string</returns>
-        public static String Peel(this String str, out String rest)
-        {
-            return Peel(str, 0, out rest);
-        }
-
-        /// <summary>
-        /// Peel the next non-whitespace substring from the given offset of the given string.
-        /// </summary>
-        /// <param name="str">The string to peel from</param>
-        /// <param name="offset">The offset into the string to start peeling from.</param>
-        /// <param name="rest">The rest of the string after the peel</param>
-        /// <returns>The peeled string</returns>
-        public static String Peel(this String str, Int32 offset, out String rest)
-        {
-            if (str == null)
-            {
-                rest = null;
-                return null;
-            }
-
-            Char c;
-
-            //
-            // Skip beginning whitespace
-            //
-            while (true)
-            {
-                if (offset >= str.Length)
-                {
-                    rest = null;
-                    return null;
-                }
-                c = str[offset];
-                if (!Char.IsWhiteSpace(c)) break;
-                offset++;
-            }
-
-            Int32 startOffset = offset;
-
-            //
-            // Find next whitespace
-            //
-            while (true)
-            {
-                offset++;
-                if (offset >= str.Length)
-                {
-                    rest = null;
-                    return str.Substring(startOffset);
-                }
-                c = str[offset];
-                if (Char.IsWhiteSpace(c)) break;
-            }
-
-            Int32 peelLimit = offset;
-
-            //
-            // Remove whitespace till rest
-            //
-            while (true)
-            {
-                offset++;
-                if (offset >= str.Length)
-                {
-                    rest = null;
-                }
-                if (!Char.IsWhiteSpace(str[offset]))
-                {
-                    rest = str.Substring(offset);
-                    break;
-                }
-            }
-            return str.Substring(startOffset, peelLimit - startOffset);
         }
     }
 }

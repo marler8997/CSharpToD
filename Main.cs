@@ -35,6 +35,8 @@ namespace CSharpToD
         public static Boolean noWarnings;
         public static Boolean ignoreFileErrors;
         public static Boolean printSourceFiles;
+        public static Boolean skeleton;
+        public static Boolean generateDebug;
 
         public static String conversionRoot;
         public static String generatedCodePath;
@@ -46,7 +48,14 @@ namespace CSharpToD
 
         static void Usage()
         {
-            Console.WriteLine("csharptod [--dir <project-root>]");
+            Console.WriteLine("csharptod [cs2d.config]");
+            Console.WriteLine("Options:");
+            Console.WriteLine("  -g                     Generate code with debugging around it");
+            Console.WriteLine("  --clean      Clean the generated first");
+            Console.WriteLine("  --no-warning Do not print the warnings");
+            Console.WriteLine("  --ignore-filre-errors  Ignore syntax/semantic errors");
+            Console.WriteLine("  --print-source-files   Print source files when building");
+            Console.WriteLine("  --skeleton             Generate types without code");
         }
         static String AssertArg(string[] args, ref int index)
         {
@@ -85,6 +94,10 @@ namespace CSharpToD
                     {
                         printSourceFiles = true;
                     }
+                    else if (arg.Equals("--skeleton"))
+                    {
+                        skeleton = true;
+                    }
                     else
                     {
                         throw new ErrorMessageException(String.Format("Unknown option: {0}", arg));
@@ -92,7 +105,14 @@ namespace CSharpToD
                 }
                 else if (arg.StartsWith("-"))
                 {
-                    throw new ErrorMessageException(String.Format("Unknown option: {0}", arg));
+                    if (arg.Equals("-g"))
+                    {
+                        generateDebug = true;
+                    }
+                    else
+                    {
+                        throw new ErrorMessageException(String.Format("Unknown option: {0}", arg));
+                    }
                 }
                 else
                 {
@@ -166,7 +186,7 @@ namespace CSharpToD
                             Console.WriteLine("Error: project does not exist: {0}", projectFileFullPath);
                             return 1;
                         }
-                        projectModelsArray[projectIndex] = new ProjectModels(projectFileFullPath);
+                        projectModelsArray[projectIndex] = new ProjectModels(projectConfig, projectFileFullPath);
                         projectIndex++;
                     }
                 }
@@ -197,9 +217,6 @@ namespace CSharpToD
                 workspace.LoadMetadataForReferencedProjects = true;
                 workspace.SkipUnrecognizedProjects = false;
 
-                // Setup Unhandled Task Exceptions
-                //TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
-
                 // Start the tasks to load and process all the projects/files
                 for (int projectIndex = 0; projectIndex < projectModelsArray.Length; projectIndex++)
                 {
@@ -216,6 +233,7 @@ namespace CSharpToD
                     return 1; // fail
                 }
 
+                /*
                 //
                 // Start Code Generation
                 //
@@ -228,6 +246,7 @@ namespace CSharpToD
                 {
                     return 1; // fail
                 }
+                */
 
                 DlangBuildGenerator.MakeDProjectFile(config, projectModelsArray);
 
@@ -274,14 +293,17 @@ namespace CSharpToD
                 return 1;
             }
         }
-        
-        static void TaskScheduler_UnobservedTaskException(object sender, UnobservedTaskExceptionEventArgs args)
+
+        public static string GetAssemblyPackageName(string assemblyName)
         {
-            ErrorMessageException errorMessageException = args.Exception.InnerException as ErrorMessageException;
-            if(errorMessageException != null)
+            lock(config.assemblyPackageOverrides)
             {
-                Console.WriteLine("Error: {0}", errorMessageException.Message);
-                Environment.Exit(1);
+                string packageName;
+                if(config.assemblyPackageOverrides.TryGetValue(assemblyName, out packageName))
+                {
+                    return packageName;
+                }
+                return assemblyName.Replace('.', '_');
             }
         }
 
@@ -402,21 +424,14 @@ namespace CSharpToD
         }
     }
 
-
     public static class Helper
     {
-        public static Boolean IsNullOrEmpty<T>(this IReadOnlyCollection<T> list)
-        {
-            return list == null || list.Count == 0;
-        }
         public static Boolean HasItems<T>(this IReadOnlyCollection<T> list)
         {
             return list != null && list.Count > 0;
         }
 
-
-
-        public static string Identifier(this NameSyntax nameSyntax)
+        public static string GetIdentifierUsingVisitor(this NameSyntax nameSyntax)
         {
             return NameSyntaxIDVisitor.Instance.Visit(nameSyntax);
         }
@@ -434,7 +449,7 @@ namespace CSharpToD
             }
             public override string VisitQualifiedName(QualifiedNameSyntax node)
             {
-                String resolvedName = String.Format("{0}.{1}", node.Left.Identifier(), node.Right.Identifier.Text);
+                String resolvedName = String.Format("{0}.{1}", node.Left.GetIdentifierUsingVisitor(), node.Right.Identifier.Text);
                 //Console.WriteLine("[{0}] Resolved qualified name to '{1}'",
                 //    Thread.CurrentThread.ManagedThreadId, resolvedName);
                 return resolvedName;
@@ -445,40 +460,105 @@ namespace CSharpToD
     class NamespaceMultiplexVisitor : CSharpSyntaxVisitor
     {
         readonly CSharpFileModel csharpFileModel;
+        readonly Stack<string> currentNamespaceHeirarchy = new Stack<string>();
         public NamespaceMultiplexVisitor(CSharpFileModel csharpFileModel)
         {
             this.csharpFileModel = csharpFileModel;
         }
+
         public override void DefaultVisit(SyntaxNode node)
         {
-            throw new NotImplementedException(String.Format("NamespaceMultiplexVisitor for {0}", node.GetType().Name));
+            throw new InvalidOperationException(String.Format(
+                "NamespaceMultiplexVisitor.Visit '{0}'", node.GetType().Name));
         }
+
         public override void VisitCompilationUnit(CompilationUnitSyntax node)
         {
-            if (node.AttributeLists.Count > 0)
+            // Only handle these items in the root context (no namespace)
+            // Because these items inside other namespaces will be handled later
+            if (currentNamespaceHeirarchy.Count == 0)
             {
-                WorkspaceModels.AddAttributeLists(csharpFileModel, node.AttributeLists);
+                if (node.AttributeLists.Count > 0)
+                {
+                    csharpFileModel.containingProject.AddAttributeLists(csharpFileModel, node.AttributeLists);
+                }
+                if (node.Externs.HasItems())
+                {
+                    throw new NotImplementedException();
+                }
             }
-            if (node.Externs.HasItems())
-            {
-                throw new NotImplementedException();
-            }
-            //
-            // Ignore node.Usings...all info from usings is available in the semantic model
-            //
             foreach (var member in node.Members)
             {
                 Visit(member);
             }
         }
-        public override void VisitNamespaceDeclaration(NamespaceDeclarationSyntax node)
+
+        void VisitMemberDeclaration(MemberDeclarationSyntax memberDecl)
         {
-            string @namespace = node.Name.Identifier();
-            WorkspaceModels.AddDecl(csharpFileModel, @namespace, node);
+            // Only handle these items in the root context (no namespace)
+            // Because these items inside other namespaces will be handled later
+            if (currentNamespaceHeirarchy.Count == 0)
+            {
+                csharpFileModel.containingProject.AddDecl(csharpFileModel, "", memberDecl);
+            }
         }
-        public override void VisitClassDeclaration(ClassDeclarationSyntax node)
+        public override void VisitEnumDeclaration(EnumDeclarationSyntax enumDecl)
         {
-            WorkspaceModels.AddDecl(csharpFileModel, "", node);
+            VisitMemberDeclaration(enumDecl);
+        }
+        public override void VisitClassDeclaration(ClassDeclarationSyntax classDecl)
+        {
+            VisitMemberDeclaration(classDecl);
+        }
+        public override void VisitInterfaceDeclaration(InterfaceDeclarationSyntax interfaceDecl)
+        {
+            VisitMemberDeclaration(interfaceDecl);
+        }
+        public override void VisitStructDeclaration(StructDeclarationSyntax structDecl)
+        {
+            VisitMemberDeclaration(structDecl);
+        }
+        public override void VisitDelegateDeclaration(DelegateDeclarationSyntax delegateDecl)
+        {
+            VisitMemberDeclaration(delegateDecl);
+        }
+
+        string CreateNamespaceInCurrentContext(string subNamespace)
+        {
+            if (currentNamespaceHeirarchy.Count == 0)
+            {
+                return subNamespace;
+            }
+            else
+            {
+                string currentNamespace = currentNamespaceHeirarchy.Peek();
+                int length = currentNamespace.Length + 1 + subNamespace.Length;
+                StringBuilder builder = new StringBuilder(length);
+                builder.Append(currentNamespace);
+                builder.Append('.');
+                builder.Append(subNamespace);
+                Debug.Assert((uint)builder.Length == length);
+                return builder.ToString();
+            }
+        }
+
+        public override void VisitNamespaceDeclaration(NamespaceDeclarationSyntax namespaceDecl)
+        {
+            string @namespace = CreateNamespaceInCurrentContext(namespaceDecl.Name.GetIdentifierUsingVisitor());
+            csharpFileModel.containingProject.AddDecl(csharpFileModel, @namespace, namespaceDecl);
+
+            currentNamespaceHeirarchy.Push(@namespace);
+            try
+            {
+                foreach(MemberDeclarationSyntax memberDecl in namespaceDecl.Members)
+                {
+                    Visit(memberDecl);
+                }
+            }
+            finally
+            {
+                currentNamespaceHeirarchy.Pop();
+            }
         }
     }
 }

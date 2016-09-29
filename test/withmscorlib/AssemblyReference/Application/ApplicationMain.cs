@@ -1,4 +1,4 @@
-﻿using Library;
+﻿using Library; // Library is an assembly reference (not a project reference)
 
 namespace Application
 {

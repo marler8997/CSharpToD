@@ -2,6 +2,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Threading;
@@ -29,6 +30,7 @@ namespace CSharpToD
     public enum TypeContext
     {
         Default,
+        Decl,
         Return,
     }
     public class CSharpFileModelNodes : IComparable<CSharpFileModelNodes>
@@ -44,29 +46,121 @@ namespace CSharpToD
         {
             return fileModel.document.FilePath.CompareTo(other.fileModel.document.FilePath);
         }
+        public void AddAttributeLists(SyntaxList<AttributeListSyntax> attributeLists)
+        {
+            this.attributeLists.Add(attributeLists);
+        }
+        public void AddDecl(MemberDeclarationSyntax decl)
+        {
+            this.decls.Add(decl);
+        }
     }
-    public class DlangGenerator
+
+    public class DlangGenerator : IComparable<DlangGenerator>
     {
-        public readonly String @namespace;
+        public readonly ProjectModels projectModels;
+        public readonly string csharpNamespace;
+        public readonly string dlangModule;
         public BufferedNativeFileSink log;
         Boolean putInPackage;
         public string filenameFullPath;
+        public int CompareTo(DlangGenerator other)
+        {
+            return filenameFullPath.CompareTo(other.filenameFullPath);
+        }
 
         readonly Dictionary<CSharpFileModel, CSharpFileModelNodes> fileModelNodeMap =
             new Dictionary<CSharpFileModel, CSharpFileModelNodes>();
-        List<String> includeSourceFiles;
+        //List<String> includeSourceFiles;
 
         Dictionary<string, object> typeNameMap = new Dictionary<string, object>();
 
-        public DlangGenerator(String @namespace)
+        public DlangGenerator(ProjectModels projectModels, String csharpNamespace)
         {
-            this.@namespace = @namespace;
+            this.projectModels = projectModels;
+            this.csharpNamespace = csharpNamespace;
+            this.dlangModule = (csharpNamespace.Length == 0) ? projectModels.assemblyPackageName :
+                String.Format("{0}.{1}", projectModels.assemblyPackageName, csharpNamespace);
         }
         public void SetPutInPackage(bool putInPackage)
         {
             this.putInPackage = putInPackage;
         }
 
+        public String GetModuleName(String assembly, String @namespace)
+        {
+            throw new NotImplementedException();
+        }
+
+        readonly Dictionary<IAssemblySymbol, string> assemblyPackageNameMap = new
+            Dictionary<IAssemblySymbol, string>();
+        public string GetAssemblyPackageName(IAssemblySymbol assemblySymbol)
+        {
+            if(assemblySymbol == null)
+            {
+                throw new InvalidOperationException();
+            }
+
+            String packageName;
+            if (!assemblyPackageNameMap.TryGetValue(assemblySymbol, out packageName))
+            {
+                if(assemblySymbol.Name == projectModels.project.AssemblyName)
+                {
+                    packageName = projectModels.assemblyPackageName;
+                }
+                else
+                {
+                    packageName = CSharpToD.GetAssemblyPackageName(assemblySymbol.Name);
+                }
+                assemblyPackageNameMap.Add(assemblySymbol, packageName);
+            }
+            return packageName;
+        }
+
+        readonly Dictionary<ITypeSymbol, string> moduleAndContainingTypeMap = new
+            Dictionary<ITypeSymbol, string>();
+
+        public String GetModuleAndContainingType(ITypeSymbol typeSymbol)
+        {
+            String moduleAndContainingType;
+            if(!moduleAndContainingTypeMap.TryGetValue(typeSymbol, out moduleAndContainingType))
+            {
+                if(typeSymbol.ContainingType != null)
+                {
+                    moduleAndContainingType = String.Format("{0}.{1}.{2}",
+                        GetModuleAndContainingType(typeSymbol.ContainingType),
+                        typeSymbol.ContainingType.Name, typeSymbol.Name);
+                }
+                else
+                {
+                    String packageName = GetAssemblyPackageName(typeSymbol.ContainingAssembly);
+                    if (typeSymbol.ContainingNamespace.Name.Length == 0)
+                    {
+                        moduleAndContainingType = packageName;
+                    }
+                    else
+                    {
+                        moduleAndContainingType = String.Format("{0}.{1}", packageName, typeSymbol.ContainingNamespace.ToString());
+                    }
+                }
+                moduleAndContainingTypeMap.Add(typeSymbol, moduleAndContainingType);
+            }
+            return moduleAndContainingType;
+        }
+        /*
+        public string DotNetToD(TypeContext context, INamedTypeSymbol typeSymbol)
+        {
+            String moduleAndContainingType = GetModuleAndContainingType(typeSymbol);
+            return SemanticExtensions.DotNetToD(context, moduleAndContainingType, typeSymbol.Name, (uint)typeSymbol.Arity);
+        }
+        public string DotNetToD(TypeContext context, ITypeSymbol typeSymbol)
+        {
+            String moduleAndContainingType = GetModuleAndContainingType(typeSymbol);
+            INamedTypeSymbol namedTypeSymbol = typeSymbol as INamedTypeSymbol;
+            uint arity = (namedTypeSymbol == null) ? 0 : (uint)namedTypeSymbol.Arity;
+            return SemanticExtensions.DotNetToD(context, moduleAndContainingType, typeSymbol.Name, arity);
+        }
+        */
         CSharpFileModelNodes GetFileModelNodes(CSharpFileModel fileModel)
         {
             CSharpFileModelNodes fileModelNodes;
@@ -88,14 +182,6 @@ namespace CSharpToD
         {
             GetFileModelNodes(fileModel).decls.Add(node);
         }
-        public void AddIncludeFile(String includeFile)
-        {
-            if (includeSourceFiles == null)
-            {
-                includeSourceFiles = new List<string>();
-            }
-            includeSourceFiles.Add(includeFile);
-        }
 
         public void Finish()
         {
@@ -104,7 +190,7 @@ namespace CSharpToD
                 if (CSharpToD.log)
                 {
                     this.log = new BufferedNativeFileSink(NativeFile.Open(
-                        Path.Combine(CSharpToD.logDirectory, @namespace),
+                        Path.Combine(CSharpToD.logDirectory, dlangModule),
                         FileMode.Create, FileAccess.Write, FileShare.ReadWrite), new byte[256]);
                 }
 
@@ -125,27 +211,23 @@ namespace CSharpToD
                 //
                 {
                     String filenameRelative;
-                    if (@namespace.Length == 0)
-                    {
-                        filenameRelative = "__NoNamespace__.d";
-                    }
-                    else if (putInPackage)
+                    if (putInPackage)
                     {
                         filenameRelative = Path.Combine(
-                            @namespace.Replace('.', Path.DirectorySeparatorChar), "package.d");
+                            dlangModule.Replace('.', Path.DirectorySeparatorChar), "package.d");
                     }
                     else
                     {
-                        int lastDotIndex = @namespace.LastIndexOf('.');
+                        int lastDotIndex = dlangModule.LastIndexOf('.');
                         if (lastDotIndex < 0)
                         {
-                            filenameRelative = @namespace + ".d";
+                            filenameRelative = dlangModule + ".d";
                         }
                         else
                         {
                             filenameRelative = Path.Combine(
-                                @namespace.Remove(lastDotIndex).Replace('.', Path.DirectorySeparatorChar),
-                                @namespace.Substring(lastDotIndex + 1) + ".d");
+                                dlangModule.Remove(lastDotIndex).Replace('.', Path.DirectorySeparatorChar),
+                                dlangModule.Substring(lastDotIndex + 1) + ".d");
                         }
                     }
                     this.filenameFullPath = Path.Combine(CSharpToD.generatedCodePath, filenameRelative);
@@ -157,20 +239,13 @@ namespace CSharpToD
                 using (DlangWriter writer = new DlangWriter(new BufferedNativeFileSink(
                     NativeFile.Open(filenameFullPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite), new byte[512])))
                 {
-                    if (@namespace.Length == 0)
-                    {
-                        writer.WriteLine("// module __NoNamespace__;");
-                    }
-                    else
-                    {
-                        writer.WriteLine("module {0};", @namespace);
-                    }
+                    writer.WriteLine("module {0};", dlangModule);
                     writer.WriteLine();
 
                     //
                     // First Pass: find imports
                     //
-                    FirstPassVisitor firstPass = new FirstPassVisitor(writer, log);
+                    FirstPassVisitor firstPass = new FirstPassVisitor(this, writer, log);
                     foreach (CSharpFileModelNodes fileModelNodes in fileModelNodesArray)
                     {
                         foreach (MemberDeclarationSyntax decl in fileModelNodes.decls)
@@ -180,6 +255,7 @@ namespace CSharpToD
                         }
                     }
 
+                    /*
                     //
                     // Add Include Files
                     //
@@ -200,23 +276,22 @@ namespace CSharpToD
                             }
                         }
                     }
+                    */
 
-                    foreach (KeyValuePair<String, HashSet<TypeSymbolAndArity>> namespaceAndType in firstPass.typeSymbolsByNamespace)
+                    foreach (KeyValuePair<String, HashSet<TypeSymbolAndArity>> moduleAndTypes in firstPass.typeSymbolsByModule)
                     {
-                        if (namespaceAndType.Key != this.@namespace)
+                        if (moduleAndTypes.Key != this.dlangModule)
                         {
-                            if (namespaceAndType.Key.Length == 0)
+                            if (moduleAndTypes.Key.Length == 0)
                             {
-                                writer.WriteLine("import __NoNamespace__ /*:");
+                                throw new InvalidOperationException();
                             }
-                            else
-                            {
-                                writer.WriteLine("import {0} :", namespaceAndType.Key);
-                            }
+
+                            writer.WriteLine("import {0} :", moduleAndTypes.Key);
                             writer.Tab();
                             uint typeIndex = 0;
-                            uint lastIndex = (uint)namespaceAndType.Value.Count - 1;
-                            foreach (TypeSymbolAndArity typeSymbol in namespaceAndType.Value)
+                            uint lastIndex = (uint)moduleAndTypes.Value.Count - 1;
+                            foreach (TypeSymbolAndArity typeSymbol in moduleAndTypes.Value)
                             {
                                 writer.Write(typeSymbol.name);
                                 if(typeSymbol.arity > 0)
@@ -239,6 +314,7 @@ namespace CSharpToD
                     DlangVisitorGenerator visitor = new DlangVisitorGenerator(this, writer, firstPass);
                     foreach (CSharpFileModelNodes fileModelNodes in fileModelNodesArray)
                     {
+                        visitor.currentFileModel = fileModelNodes.fileModel;
                         writer.WriteLine();
                         writer.WriteLine("//");
                         writer.WriteLine("// Source Generated From '{0}'", fileModelNodes.fileModel.document.FilePath);
@@ -257,7 +333,6 @@ namespace CSharpToD
                                 log.PutLine(String.Format("[{0}] Processing File '{1}'",
                                     Thread.CurrentThread.ManagedThreadId, fileModelNodes.fileModel.document.FilePath));
                             }
-                            visitor.currentFileModel = fileModelNodes.fileModel;
                             visitor.Visit(decl);
                         }
                     }
@@ -308,20 +383,58 @@ namespace CSharpToD
         Interface = 1,
         Struct = 2,
     }
-    class FirstPassVisitor : CSharpSyntaxVisitor
+
+    class CSharpToDVisitor : CSharpSyntaxVisitor
+    {
+        protected readonly DlangGenerator generator;
+        public CSharpToDVisitor(DlangGenerator generator)
+        {
+            this.generator = generator;
+        }
+
+        public CSharpFileModel currentFileModel;
+
+        protected bool TypeIsRemoved(TypeDeclarationSyntax typeDecl)
+        {
+            if (generator.projectModels.config.typesToRemove.Count > 0)
+            {
+                INamedTypeSymbol typeSymbol = currentFileModel.semanticModel.GetDeclaredSymbol(typeDecl);
+                if (typeSymbol.Arity == 0)
+                {
+                    String moduleAndContainingType = generator.GetModuleAndContainingType(typeSymbol);
+                    DType dType = SemanticExtensions.DotNetToD(TypeContext.Decl,
+                        moduleAndContainingType, typeSymbol.Name, (uint)typeSymbol.Arity);
+                    int fullTypeDeclNameLength = moduleAndContainingType.Length + 1 + dType.name.Length;
+                    foreach (String typeToRemove in generator.projectModels.config.typesToRemove)
+                    {
+                        if (typeToRemove.Length == fullTypeDeclNameLength &&
+                            typeToRemove.StartsWith(moduleAndContainingType) &&
+                            typeToRemove[moduleAndContainingType.Length] == '.' &&
+                            typeToRemove.EndsWith(dType.name))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            return false;
+        }
+    }
+
+    class FirstPassVisitor : CSharpToDVisitor
     {
         readonly DlangWriter writer;
         readonly BufferedNativeFileSink log;
-        public CSharpFileModel currentFileModel;
         
         readonly HashSet<ITypeSymbol> typesAlreadyAdded = new HashSet<ITypeSymbol>();
-        public readonly KeyUniqueValues<string, TypeSymbolAndArity> typeSymbolsByNamespace =
+        public readonly KeyUniqueValues<string, TypeSymbolAndArity> typeSymbolsByModule =
             new KeyUniqueValues<string, TypeSymbolAndArity>(true);
 
         public readonly KeyValues<string, FileAndTypeDecl> partialTypes =
             new KeyValues<string, FileAndTypeDecl>(true);
 
-        public FirstPassVisitor(DlangWriter writer, BufferedNativeFileSink log)
+        public FirstPassVisitor(DlangGenerator generator, DlangWriter writer, BufferedNativeFileSink log)
+            : base(generator)
         {
             this.writer = writer;
             this.log = log;
@@ -329,6 +442,7 @@ namespace CSharpToD
 
         public override void DefaultVisit(SyntaxNode node)
         {
+            throw new NotImplementedException(String.Format("FirstPassVisitor for '{0}'", node.GetType().Name));
         }
         public override void VisitNamespaceDeclaration(NamespaceDeclarationSyntax node)
         {
@@ -338,15 +452,15 @@ namespace CSharpToD
             }
         }
         
-        void AddNewType(String dModule, String dlangTypeIdentifier, UInt32 arity)
+        void AddNewType(String module, String dlangTypeIdentifier, UInt32 arity)
         {
             //String dModule = SemanticExtensions.NamespaceToDModule(@namespace);
-            typeSymbolsByNamespace.Add(dModule, new TypeSymbolAndArity(dlangTypeIdentifier, arity));
+            typeSymbolsByModule.Add(module, new TypeSymbolAndArity(dlangTypeIdentifier, arity));
             //Console.WriteLine("Namespace '{0}', from symbol '{1}'", typeSymbol.ContainingModule(), typeSymbol.Name);
             //writer.WriteCommentedLine(String.Format("Namespace '{0}', from symbol '{1}'", typeSymbol.ContainingModule(), typeSymbol.Name));
             if (log != null)
             {
-                log.PutLine(String.Format("Module '{0}', from symbol '{1}'", dModule, dlangTypeIdentifier));
+                log.PutLine(String.Format("Module '{0}', from symbol '{1}'", module, dlangTypeIdentifier));
             }
         }
         void AddNamespaceFrom(ITypeSymbol typeSymbol)
@@ -382,12 +496,18 @@ namespace CSharpToD
                             throw new InvalidOperationException();
                         }
 
-                        AddNewType(typeSymbol.ContainingModule(), DlangWriter.DotNetToD(
-                            TypeContext.Default, typeSymbol), arity);
+                        String module = generator.GetModuleAndContainingType(typeSymbol);
+                        DType dType = SemanticExtensions.DotNetToD(TypeContext.Default,
+                            module, typeSymbol.Name, arity);
+                        if (!dType.isPrimitive)
+                        {
+                            AddNewType(module, dType.name, arity);
+                        }
 
                         if (log != null)
                         {
-                            log.PutLine(String.Format("Adding generic types from {0}.{1}", typeSymbol.ContainingModule(), typeSymbol.Name));
+                            log.PutLine(String.Format("Adding generic types from {0}.{1}",
+                                module, typeSymbol.Name));
                         }
                     }
                 }
@@ -403,6 +523,11 @@ namespace CSharpToD
 
         void VisitTypeDeclaration(TypeDeclType typeDeclType, TypeDeclarationSyntax typeDecl)
         {
+            if(TypeIsRemoved(typeDecl))
+            {
+                return;
+            }
+
             if (typeDecl.Modifiers.ContainsPartial())
             {
                 partialTypes.Add(typeDecl.Identifier.Text,
@@ -412,7 +537,7 @@ namespace CSharpToD
             {
                 if (typeDeclType == TypeDeclType.Class)
                 {
-                    AddNewType("System", "DotNetObject", 0);
+                    AddNewType("mscorlib.System", "DotNetObject", 0);
                 }
             }
             else
@@ -428,7 +553,7 @@ namespace CSharpToD
                     ITypeSymbol firstTypeSymbol = currentFileModel.semanticModel.GetTypeInfo(firstType.Type).Type;
                     if (firstTypeSymbol.TypeKind != TypeKind.Class)
                     {
-                        AddNewType("System", "DotNetObject", 0);
+                        AddNewType("mscorlib.System", "DotNetObject", 0);
                     }
                 }
 
@@ -451,7 +576,7 @@ namespace CSharpToD
             {
                 if (typeDecl.BaseList != null)
                 {
-                    AddNewType("System", "DotNetObject", 0);
+                    AddNewType("mscorlib.System", "DotNetObject", 0);
                 }
             }
         }
@@ -476,11 +601,122 @@ namespace CSharpToD
                 AddNamespaceFrom(currentFileModel.semanticModel.GetTypeInfo(param.Type).Type);
             }
         }
+        public override void VisitEnumDeclaration(EnumDeclarationSyntax enumDecl)
+        {
+            foreach (EnumMemberDeclarationSyntax enumMember in enumDecl.Members)
+            {
+                if (enumMember.EqualsValue != null)
+                {
+                    if (!CSharpToD.skeleton)
+                    {
+                        Visit(enumMember.EqualsValue.Value);
+                    }
+                }
+            }
+        }
 
         public override void VisitFieldDeclaration(FieldDeclarationSyntax fieldDecl)
         {
             ITypeSymbol fieldType = currentFileModel.semanticModel.GetTypeInfo(fieldDecl.Declaration.Type).Type;
             AddNamespaceFrom(fieldType);
+        }
+        public override void VisitPropertyDeclaration(PropertyDeclarationSyntax node)
+        {
+            // TODO: implement this
+        }
+        public override void VisitConstructorDeclaration(ConstructorDeclarationSyntax node)
+        {
+            // TODO: implement this
+        }
+        public override void VisitDestructorDeclaration(DestructorDeclarationSyntax node)
+        {
+            // TODO: implement this
+        }
+        public override void VisitMethodDeclaration(MethodDeclarationSyntax node)
+        {
+            // TODO: implement this
+        }
+        public override void VisitIndexerDeclaration(IndexerDeclarationSyntax node)
+        {
+            // TODO: implement this
+        }
+        public override void VisitOperatorDeclaration(OperatorDeclarationSyntax node)
+        {
+            // TODO: implement this
+        }
+        public override void VisitEventDeclaration(EventDeclarationSyntax node)
+        {
+            // TODO: implement this
+        }
+        public override void VisitEventFieldDeclaration(EventFieldDeclarationSyntax node)
+        {
+            // TODO: implement this
+        }
+        public override void VisitConversionOperatorDeclaration(ConversionOperatorDeclarationSyntax node)
+        {
+            // TODO: implement this
+        }
+
+
+        //
+        // Expressions
+        //
+        public override void VisitParenthesizedExpression(ParenthesizedExpressionSyntax parensExpression)
+        {
+            Visit(parensExpression.Expression);
+        }
+        public override void VisitAssignmentExpression(AssignmentExpressionSyntax node)
+        {
+            throw new NotImplementedException("VisitAssignmentExpression");
+        }
+        public override void VisitLiteralExpression(LiteralExpressionSyntax literalExpression)
+        {
+            // I think literals do not contain types...not 100% sure though
+        }
+        public override void VisitBinaryExpression(BinaryExpressionSyntax binaryExpression)
+        {
+            Visit(binaryExpression.Left);
+            Visit(binaryExpression.Right);
+        }
+        public override void VisitIdentifierName(IdentifierNameSyntax identifier)
+        {
+            TypeInfo typeInfo = currentFileModel.semanticModel.GetTypeInfo(identifier);
+            if(typeInfo.Type != null)
+            {
+                // TODO: I will need the type namespace, but maybe not the type symbol?
+                AddNamespaceFrom(typeInfo.Type);
+            }
+        }
+        public override void VisitCastExpression(CastExpressionSyntax cast)
+        {
+            AddNamespaceFrom(currentFileModel.semanticModel.GetTypeInfo(cast.Type).Type);
+            Visit(cast.Expression);
+        }
+        public override void VisitMemberAccessExpression(MemberAccessExpressionSyntax memberAccess)
+        {
+            Visit(memberAccess.Expression);
+            TypeInfo typeInfo = currentFileModel.semanticModel.GetTypeInfo(memberAccess.Name);
+            if(typeInfo.Type != null)
+            {
+                // TODO: I will need the type namespace, but maybe not the type symbol?
+                AddNamespaceFrom(typeInfo.Type);
+            }
+        }
+        public override void VisitCheckedExpression(CheckedExpressionSyntax checkedExpression)
+        {
+            Visit(checkedExpression.Expression);
+        }
+        public override void VisitPrefixUnaryExpression(PrefixUnaryExpressionSyntax unaryExpression)
+        {
+            Visit(unaryExpression.Operand);
+        }
+        public override void VisitEqualsValueClause(EqualsValueClauseSyntax equalsValueClause)
+        {
+            Visit(equalsValueClause.Value);
+        }
+        public override void VisitObjectCreationExpression(ObjectCreationExpressionSyntax node)
+        {
+            throw new NotImplementedException();
         }
     }
     public struct DeclContext
@@ -495,20 +731,19 @@ namespace CSharpToD
             this.isStatic = isStatic;
         }
     }
-    class DlangVisitorGenerator : CSharpSyntaxVisitor
+    class DlangVisitorGenerator : CSharpToDVisitor
     {
-        readonly DlangGenerator generator;
         public readonly DlangWriter writer;
-        public CSharpFileModel currentFileModel;
+
         readonly FirstPassVisitor firstPass;
 
+        bool insideNamespace;
         readonly Stack<DeclContext> currentDeclContext =
             new Stack<DeclContext>();
 
         public DlangVisitorGenerator(DlangGenerator generator, DlangWriter writer,
-            FirstPassVisitor firstPass)
+            FirstPassVisitor firstPass) : base(generator)
         {
-            this.generator = generator;
             this.writer = writer;
             this.firstPass = firstPass;
         }
@@ -516,15 +751,31 @@ namespace CSharpToD
         {
             throw new NotImplementedException(String.Format("DlangVisitorGenerator for {0}", node.GetType().Name));
         }
-        public override void VisitNamespaceDeclaration(NamespaceDeclarationSyntax node)
+        public override void VisitNamespaceDeclaration(NamespaceDeclarationSyntax namespaceDecl)
         {
-            if (node.Externs.HasItems())
+            String namespaceName = namespaceDecl.Name.GetIdentifierUsingVisitor();
+            if (insideNamespace)
             {
-                throw new NotImplementedException();
+                writer.WriteCommentedLine(String.Format("Nested namespace '{0}' has been moved", namespaceName));
             }
-            foreach (var member in node.Members)
+            else
             {
-                Visit(member);
+                if (namespaceDecl.Externs.HasItems())
+                {
+                    throw new NotImplementedException();
+                }
+                try
+                {
+                    insideNamespace = true;
+                    foreach (var member in namespaceDecl.Members)
+                    {
+                        Visit(member);
+                    }
+                }
+                finally
+                {
+                    insideNamespace = false;
+                }
             }
         }
 
@@ -551,6 +802,13 @@ namespace CSharpToD
 
         void VisitTypeDeclarationSyntax(TypeDeclType typeDeclType, TypeDeclarationSyntax typeDecl)
         {
+            if (TypeIsRemoved(typeDecl))
+            {
+                writer.WriteCommentedLine(String.Format(
+                    "Type '{0}' was removed by configuration", typeDecl.Identifier.Text));
+                return;
+            }
+
             ModifierCategories modifiers = new ModifierCategories(typeDecl.Modifiers);
 
             if(modifiers.@new || modifiers.@volatile || modifiers.@fixed ||
@@ -628,6 +886,7 @@ namespace CSharpToD
             }
             WriteTypeDeclName(typeDecl);
             // TODO: loop through base list of all partial classes
+            //       come up with a regression test for this case before implementing
             if (typeDeclType != TypeDeclType.Struct)
             {
                 // Do not write base list for System.Object
@@ -721,7 +980,7 @@ namespace CSharpToD
                     writer.WriteLine("{");
                     writer.Tab();
                     {
-                        writer.WriteDlangType(null, TypeContext.Default, typeSymbol);
+                        WriteDlangType(TypeContext.Default, typeSymbol);
                         writer.WriteLine(" value;");
                         writer.WriteLine("alias value this;");
                     }
@@ -733,7 +992,15 @@ namespace CSharpToD
 
         void WriteTypeDeclName(TypeDeclarationSyntax typeDecl)
         {
-            writer.WriteDlangTypeDeclName(generator.@namespace, typeDecl);
+            INamedTypeSymbol typeSymbol = currentFileModel.semanticModel.GetDeclaredSymbol(typeDecl);
+            String moduleAndContainingType = generator.GetModuleAndContainingType(typeSymbol);
+            DType dType = SemanticExtensions.DotNetToD(TypeContext.Decl,
+                moduleAndContainingType, typeSymbol.Name, (uint)typeSymbol.Arity);
+            writer.Write(dType.name);
+            if(typeSymbol.Arity > 0)
+            {
+                writer.Write("{0}", typeSymbol.Arity);
+            }
             if (typeDecl.TypeParameterList != null)
             {
                 WriteGenericTypeListDecl(typeDecl.TypeParameterList);
@@ -791,7 +1058,7 @@ namespace CSharpToD
                     }
 
                     INamedTypeSymbol namedType = (INamedTypeSymbol)typeInfo.Type;
-                    writer.WriteDlangType(currentDeclContext, TypeContext.Default, namedType);
+                    WriteDlangType(TypeContext.Default, namedType);
                 }
             }
         }
@@ -863,7 +1130,7 @@ namespace CSharpToD
             writer.Write(" = ");
 
             TypeInfo typeInfo = currentFileModel.semanticModel.GetTypeInfo(delegateDecl.ReturnType);
-            writer.WriteDlangType(currentDeclContext, TypeContext.Return, typeInfo.Type);
+            WriteDlangType(TypeContext.Return, typeInfo.Type);
             writer.Write(" delegate(");
 
             bool atFirst = true;
@@ -895,7 +1162,7 @@ namespace CSharpToD
             }
 
             ITypeSymbol typeSymbol = currentFileModel.semanticModel.GetTypeInfo(param.Type).Type;
-            writer.WriteDlangType(currentDeclContext, TypeContext.Default, typeSymbol);
+            WriteDlangType(TypeContext.Default, typeSymbol);
 
             writer.Write(" ");
             writer.Write(param.Identifier.Text);
@@ -950,9 +1217,15 @@ namespace CSharpToD
                     writer.Write(GetIdentifierName(enumMember.Identifier.Text));
                     if (enumMember.EqualsValue != null)
                     {
-                        writer.WriteCommentedInline("todo: implement = expression");
-                        //writer.Write(" = ");
-                        //WriteExpression(enumMember.EqualsValue.Value);
+                        if (CSharpToD.skeleton)
+                        {
+                            writer.WriteCommentedInline("[= ommited in 'skeleton' mode]");
+                        }
+                        else
+                        {
+                            writer.Write(" = ");
+                            Visit(enumMember.EqualsValue.Value);
+                        }
                     }
                     writer.WriteLine(",");
                 }
@@ -999,17 +1272,17 @@ namespace CSharpToD
                 writer.Write(modifiers.dlangVisibility);
                 writer.Write(" ");
             }
-            if (currentDeclContext.Count > 0)
+            if(modifiers.@static)
             {
                 writer.Write("static ");
             }
             if(modifiers.@const)
             {
-                writer.Write("immutable "); // TODO: not sure if this is equivalent
+                writer.Write("enum "); // TODO: not sure if this is equivalent
             }
             if(modifiers.@readonly)
             {
-                writer.Write("const "); // TODO: not sure if this is equivalent
+                writer.Write("immutable "); // TODO: not sure if this is equivalent
             }
             if (modifiers.@new)
             {
@@ -1025,7 +1298,7 @@ namespace CSharpToD
             }
             
             ITypeSymbol typeSymbol = currentFileModel.semanticModel.GetTypeInfo(fieldDecl.Declaration.Type).Type;
-            writer.WriteDlangType(currentDeclContext, TypeContext.Default, typeSymbol);
+            WriteDlangType(TypeContext.Default, typeSymbol);
             writer.Write(" ");
 
             bool atFirst = true;
@@ -1035,7 +1308,7 @@ namespace CSharpToD
 
                 {
                     String identifierName = GetIdentifierName(variableDecl.Identifier.Text);
-                    if(writer.DlangTypeStringEqualsIdentifier(typeSymbol, identifierName))
+                    if(typeSymbol.DlangTypeStringEqualsIdentifier(identifierName))
                     {
                         identifierName = identifierName + "_";
                     }
@@ -1049,16 +1322,123 @@ namespace CSharpToD
                 }
                 if(variableDecl.Initializer != null)
                 {
-                    writer.WriteCommentedInline("todo: implement initializer");
+                    if (CSharpToD.skeleton)
+                    {
+                        if (modifiers.@const)
+                        {
+                            // need to write a value
+                            writer.Write(" = ");
+                            WriteDlangDefaultValue(typeSymbol);
+                        }
+                        else
+                        {
+                            writer.WriteCommentedInline("initializer stripped in skeleton mode");
+                        }
+                    }
+                    else
+                    {
+                        writer.WriteCommentedInline("todo: implement initializer");
+                        writer.Write(" = ");
+                        WriteDlangDefaultValue(typeSymbol);
+                        //Visit(variableDecl.Initializer);
+                    }
                 }
             }
             writer.WriteLine(";");
         }
 
-        void WriteExpression(ExpressionSyntax expression)
+        public void WriteDlangTypeDeclName(String dlangModule, String identifier, UInt32 genericTypeCount)
         {
-            throw new NotImplementedException();
+            DType dType = SemanticExtensions.DotNetToD(TypeContext.Default, dlangModule, identifier, genericTypeCount);
+            writer.Write(dType.name);
+            if (genericTypeCount > 0)
+            {
+                writer.Write("{0}", genericTypeCount);
+            }
         }
+        public void WriteDlangTypeDeclName(String @namespace, TypeDeclarationSyntax typeDecl)
+        {
+            UInt32 genericTypeCount = 0;
+            if (typeDecl.TypeParameterList != null)
+            {
+                genericTypeCount = (uint)typeDecl.TypeParameterList.Parameters.Count;
+            }
+            WriteDlangTypeDeclName(@namespace, typeDecl.Identifier.ToString(), genericTypeCount);
+        }
+        public void WriteDlangDefaultValue(ITypeSymbol typeSymbol)
+        {
+            switch(typeSymbol.TypeKind)
+            {
+                case TypeKind.Array:
+                case TypeKind.Class:
+                case TypeKind.Delegate:
+                case TypeKind.Interface:
+                case TypeKind.Pointer:
+                    writer.Write("null");
+                    break;
+                case TypeKind.Enum:
+                    writer.Write("(cast(");
+                    WriteDlangType(TypeContext.Default, typeSymbol);
+                    writer.Write(")0)");
+                    break;
+                case TypeKind.Struct:
+                    WriteDlangType(TypeContext.Default, typeSymbol);
+                    writer.Write("()");
+                    break;
+                case TypeKind.TypeParameter:
+                    throw new NotImplementedException();
+                    break;
+                default:
+                    throw new NotImplementedException(String.Format("WriteDlangDefaultValue (type kind '{0}')", typeSymbol.TypeKind));
+            }
+        }
+        public void WriteDlangType(TypeContext context, ITypeSymbol typeSymbol)
+        {
+            if (typeSymbol.TypeKind == TypeKind.Array)
+            {
+                WriteDlangType(context, ((IArrayTypeSymbol)typeSymbol).ElementType);
+                writer.Write("[]");
+            }
+            else if (typeSymbol.TypeKind == TypeKind.Pointer)
+            {
+                WriteDlangType(context, ((IPointerTypeSymbol)typeSymbol).PointedAtType);
+                writer.Write("*");
+            }
+            else
+            {
+                INamedTypeSymbol namedTypeSymbol = typeSymbol as INamedTypeSymbol;
+                int arity = (namedTypeSymbol == null) ? 0 : namedTypeSymbol.Arity;
+
+                if (typeSymbol.Kind != SymbolKind.TypeParameter)
+                {
+                    if (typeSymbol.ContainingType != null)
+                    {
+                        if (!currentDeclContext.Inside(typeSymbol.ContainingType))
+                        {
+                            WriteDlangType(context, typeSymbol.ContainingType);
+                            writer.Write(".");
+                        }
+                    }
+                }
+
+                string moduleAndContainingType = generator.GetModuleAndContainingType(typeSymbol);
+                DType dType = SemanticExtensions.DotNetToD(context,
+                    moduleAndContainingType, typeSymbol.Name, (uint)arity);
+                writer.Write(dType.name);
+                if (arity > 0)
+                {
+                    writer.Write("{0}!(", arity);
+                    bool atFirst = true;
+                    foreach (ITypeSymbol genericTypeArg in namedTypeSymbol.TypeArguments)
+                    {
+                        if (atFirst) { atFirst = false; } else { writer.Write(","); }
+                        WriteDlangType(context, genericTypeArg);
+                    }
+                    writer.Write(")");
+                }
+            }
+        }
+
 
         public override void VisitConstructorDeclaration(ConstructorDeclarationSyntax node)
         {
@@ -1096,6 +1476,104 @@ namespace CSharpToD
         {
             writer.WriteCommentedLine("TODO: generate event field");
         }
+
+        //
+        // Expressions
+        //
+        public override void VisitParenthesizedExpression(ParenthesizedExpressionSyntax parensExpression)
+        {
+            writer.Write("(");
+            Visit(parensExpression.Expression);
+            writer.Write(")");
+        }
+        public override void VisitAssignmentExpression(AssignmentExpressionSyntax node)
+        {
+            throw new NotImplementedException("VisitAssignmentExpression");
+        }
+        public override void VisitLiteralExpression(LiteralExpressionSyntax literalExpression)
+        {
+            if(CSharpToD.generateDebug)
+            {
+                writer.Write("/*LiteralExpression(*/{0}/*)*/", literalExpression.Token.Text);
+            }
+            else
+            {
+                writer.Write(literalExpression.Token.Text);
+            }
+        }
+        public override void VisitBinaryExpression(BinaryExpressionSyntax binaryExpression)
+        {
+            Visit(binaryExpression.Left);
+            writer.Write(" ");
+            writer.Write(binaryExpression.OperatorToken.Text);
+            writer.Write(" ");
+            Visit(binaryExpression.Right);
+        }
+        public override void VisitIdentifierName(IdentifierNameSyntax identifier)
+        {
+            if(CSharpToD.generateDebug)
+            {
+                writer.Write("/*IdentifierName(*/{0}/*)*/", identifier.Identifier.Text);
+            }
+            else
+            {
+                writer.Write(identifier.Identifier.Text);
+            }
+        }
+        public override void VisitCastExpression(CastExpressionSyntax cast)
+        {
+            ITypeSymbol typeSymbol = currentFileModel.semanticModel.GetTypeInfo(cast.Type).Type;
+
+            writer.Write("cast(");
+            WriteDlangType(TypeContext.Default, typeSymbol);
+            writer.Write(")");
+            Visit(cast.Expression);
+        }
+        public override void VisitMemberAccessExpression(MemberAccessExpressionSyntax memberAccess)
+        {
+            if (CSharpToD.generateDebug)
+            {
+                writer.Write("/*MemberAccessExpression(*/");
+            }
+            Visit(memberAccess.Expression);
+            writer.Write(memberAccess.OperatorToken.Text);
+            writer.Write(memberAccess.Name.Identifier.Text);
+            if (CSharpToD.generateDebug)
+            {
+                writer.Write("/*)*/");
+            }
+        }
+        public override void VisitCheckedExpression(CheckedExpressionSyntax checkedExpression)
+        {
+            String operatorString = checkedExpression.Keyword.Text;
+            if (operatorString == "unchecked")
+            {
+                // I think dlang is unchecked by default
+                Visit(checkedExpression.Expression);
+            }
+            else
+            {
+                throw new NotImplementedException(String.Format("CheckedExpression '{0}'", operatorString));
+            }
+        }
+        public override void VisitPrefixUnaryExpression(PrefixUnaryExpressionSyntax unaryExpression)
+        {
+            writer.Write(unaryExpression.OperatorToken.Text);
+            Visit(unaryExpression.Operand);
+        }
+        public override void VisitEqualsValueClause(EqualsValueClauseSyntax equalsValueClause)
+        {
+            if(equalsValueClause.EqualsToken.Text != "=")
+            {
+                throw new NotImplementedException();
+            }
+            writer.Write(" = ");
+            Visit(equalsValueClause.Value);
+        }
+        public override void VisitObjectCreationExpression(ObjectCreationExpressionSyntax node)
+        {
+            throw new NotImplementedException();
+        }
     }
 
     public static class Modifiers
@@ -1112,25 +1590,91 @@ namespace CSharpToD
             return false;
         }
     }
+
+    public struct DType
+    {
+        public readonly Boolean isPrimitive;
+        public readonly String name;
+        public DType(Boolean isPrimitive, String name)
+        {
+            this.isPrimitive = isPrimitive;
+            this.name = name;
+        }
+    }
+
     public static class SemanticExtensions
     {
-        public static String ContainingModule(this ITypeSymbol typeSymbol)
+        static readonly Dictionary<string, DType> PrimitiveSystemDeclTypeMap = new Dictionary<string, DType>
         {
-            INamespaceSymbol namespaceSymbol = typeSymbol.ContainingNamespace;
-            if (namespaceSymbol == null || namespaceSymbol.Name.Length == 0)
-            {
-                return "__NoNamespace__";
-            }
-            return namespaceSymbol.ToString();
-        }
-        public static String NamespaceToDModule(String @namespace)
+            { "Object", new DType(false, "DotNetObject") },
+            {"Exception", new DType(false, "DotNetException") },
+        };
+        static readonly Dictionary<string, DType> PrimitiveSystemTypeMap = new Dictionary<string, DType>
         {
-            if (@namespace.Length == 0)
+            {"Boolean", new DType(true, "bool") },
+            {"Char", new DType(true, "wchar") },
+
+            {"Byte", new DType(true, "ubyte") },
+            {"SByte", new DType(true, "byte") },
+
+            {"Int16", new DType(true, "short") },
+            {"UInt16", new DType(true, "ushort") },
+
+            {"Int32", new DType(true, "int") },
+            {"UInt32", new DType(true, "uint") },
+
+            {"Int64", new DType(true, "long") },
+            {"UInt64", new DType(true, "ulong") },
+
+            {"Single", new DType(true, "float") },
+            {"Double", new DType(true, "double") },
+
+            { "Object", new DType(false, "DotNetObject") },
+            {"Exception", new DType(false, "DotNetException") },
+        };
+        static readonly Dictionary<string, DType> PrimitiveSystemReflectionTypeMap = new Dictionary<string, DType>
+        {
+            {"TypeInfo", new DType(false, "DotNetTypeInfo") },
+        };
+        public static DType DotNetToD(TypeContext context, string moduleAndContainingType, string typeName, UInt32 genericTypeCount)
+        {
+            if (genericTypeCount == 0)
             {
-                return "__NoNamespace__";
+                if (moduleAndContainingType == "mscorlib.System")
+                {
+                    if (context == TypeContext.Return && typeName == "Void")
+                    {
+                        return new DType(true, "void");
+                    }
+
+                    DType dlangType;
+                    if (context == TypeContext.Decl)
+                    {
+                        if (PrimitiveSystemDeclTypeMap.TryGetValue(typeName, out dlangType))
+                        {
+                            return dlangType;
+                        }
+                    }
+                    else // Default/Return context
+                    {
+                        if (PrimitiveSystemTypeMap.TryGetValue(typeName, out dlangType))
+                        {
+                            return dlangType;
+                        }
+                    }
+                }
+                else if (moduleAndContainingType == "mscorlib.System.Reflection")
+                {
+                    DType dlangType;
+                    if (PrimitiveSystemReflectionTypeMap.TryGetValue(typeName, out dlangType))
+                    {
+                        return dlangType;
+                    }
+                }
             }
-            return @namespace;
+            return new DType(false, typeName);
         }
+
         public static Boolean Inside(this Stack<DeclContext> declContextStack, INamedTypeSymbol typeSymbol)
         {
             if(declContextStack == null)
@@ -1145,6 +1689,27 @@ namespace CSharpToD
                 }
             }
             return false;
+        }
+        public static Boolean DlangTypeStringEqualsIdentifier(this ITypeSymbol typeSymbol, String identifier)
+        {
+            if (typeSymbol.TypeKind == TypeKind.Array)
+            {
+                return false;
+            }
+            else if (typeSymbol.TypeKind == TypeKind.Pointer)
+            {
+                return false;
+            }
+            else
+            {
+                INamedTypeSymbol namedTypeSymbol = typeSymbol as INamedTypeSymbol;
+                if (namedTypeSymbol != null && namedTypeSymbol.Arity > 0)
+                {
+                    return false;
+                }
+
+                return typeSymbol.Name.Equals(identifier);
+            }
         }
     }
 
@@ -1286,7 +1851,7 @@ namespace CSharpToD
                     else
                     {
                         this.csharpVisibility = text;
-                        this.dlangVisibility = "public"; // treat 'internal' as public
+                        this.dlangVisibility = "public"; // treat 'internal' as 'public'
                     }
                 }
                 else if (text == "static")

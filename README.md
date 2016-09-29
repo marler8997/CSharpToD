@@ -9,3 +9,9 @@ Setup
   - Build mscorlib (generates some project files and makes sure that the project
     is valid).
   - Run `csharptod <CSharpToDRepo>/mscorlib/cs2d.config`
+3. Build corefx
+  - Download git repo https://github.com/dotnet/corefx to the same directory as
+    the CSharpToD repo.
+  - Build corefx (generates some project files and makes sure that the project
+    is valid).
+  - Run `csharptod <CSharpToDRepo>/corefx/cs2d.config`

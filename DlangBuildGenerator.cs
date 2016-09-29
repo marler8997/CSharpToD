@@ -1,5 +1,6 @@
 ﻿using System;
 using System.IO;
+using Microsoft.CodeAnalysis;
 
 namespace CSharpToD
 {
@@ -18,23 +19,19 @@ import std.process : spawnShell, wait;
 import std.path    : setExtension, buildNormalizedPath;
 
 enum OutputType {Library,Exe}
+struct Project
+{
+    string outputName;
+    OutputType outputType;
+    string[] sourceFiles;
+}
 ");
 
                 writer.WriteLine(@"immutable string rootPath = `{0}`;", CSharpToD.generatedCodePath);
+
                 writer.WriteLine(@"immutable string mscorlibPath = `{0}`;", CSharpToD.mscorlibPath);
-
-
-                writer.WriteLine(@"immutable string[] sourceFiles = [");
-                writer.Tab();
-                foreach (DlangGenerator generator in WorkspaceModels.Generators)
-                {
-                    writer.WriteLine("`{0}`,", generator.filenameFullPath);
-                }
-                writer.Untab();
-                writer.WriteLine("];");
-                writer.WriteLine(@"immutable outputName = ""{0}"";", config.outputName);
-                writer.WriteLine(@"immutable outputType = OutputType.{0};", config.outputType);
                 writer.WriteLine(@"enum DEFAULT_NO_MSCORLIB = {0};", config.noMscorlib ? "true" : "false");
+
                 writer.WriteLine(@"immutable string[] includePaths = [");
                 writer.Tab();
                 foreach (String includePath in config.includePaths)
@@ -43,6 +40,7 @@ enum OutputType {Library,Exe}
                 }
                 writer.Untab();
                 writer.WriteLine("];");
+
                 writer.WriteLine(@"immutable string[] libraries = [");
                 writer.Tab();
                 foreach (String library in config.libraries)
@@ -51,6 +49,31 @@ enum OutputType {Library,Exe}
                 }
                 writer.Untab();
                 writer.WriteLine("];");
+
+                {
+                    writer.WriteLine(@"immutable Project[] projects = [");
+                    writer.Tab();
+                    foreach (ProjectModels project in projectModelsArray)
+                    {
+                        writer.WriteLine("immutable Project(\"{0}\", OutputType.{1}, [",
+                            project.assemblyPackageName, project.outputType);
+                        writer.Tab();
+
+                        DlangGenerator[] generators = System.Linq.Enumerable.ToArray(project.namespaceGeneratorMap.Values);
+                        // Sort so that the source files are always in the same order
+                        // no matter the timing
+                        Array.Sort(generators);
+                        foreach (DlangGenerator generator in generators)
+                        {
+                            // TODO: make these files relative
+                            writer.WriteLine("`{0}`,", generator.filenameFullPath);
+                        }
+                        writer.Untab();
+                        writer.WriteLine("]),");
+                    }
+                    writer.Untab();
+                    writer.WriteLine("];");
+                }
 
                 writer.WriteLine(@"
 int tryRun(string command)
@@ -72,53 +95,53 @@ int main(string[] args)
     getopt(args,
         ""no-mscorlib"", &noMscorlib);
 
-    string[] objectFiles = new string[sourceFiles.length];
-    foreach(i, sourceFile; sourceFiles) {
-        objectFiles[i] = sourceFile.setExtension(""obj"");
-    }
+    foreach(project; projects)
+    {
+        writefln(""Building project '%s'..."", project.outputName);
 
-    //
-    // Compile
-    //
-    string compileCommand = format(""dmd -c -I%s"", rootPath);
-    if(!noMscorlib) {
-        compileCommand ~= "" -I"" ~ mscorlibPath;
-    }
-    foreach(includePath; includePaths) {
-        compileCommand ~= "" -I"" ~ buildNormalizedPath(includePath);
-    }
+        string[] objectFiles = new string[project.sourceFiles.length];
+        foreach(i, sourceFile; project.sourceFiles) {
+            objectFiles[i] = sourceFile.setExtension(""obj"");
+        }
 
-    foreach(i, sourceFile; sourceFiles) {
-        if(tryRun(format(""%s -of%s %s"", compileCommand, objectFiles[i], sourceFile))) {
+        //
+        // Compile
+        //
+        string compileCommand = format(""dmd -c -I%s"", rootPath);
+        if(!noMscorlib) {
+            compileCommand ~= "" -I"" ~ mscorlibPath;
+        }
+        foreach(includePath; includePaths) {
+            compileCommand ~= "" -I"" ~ buildNormalizedPath(includePath);
+        }
+
+        foreach(i, sourceFile; project.sourceFiles) {
+            if(tryRun(format(""%s -of%s %s"", compileCommand, objectFiles[i], sourceFile))) {
+                return 1;
+            }
+        }
+
+        //
+        // Link
+        //
+        string linkCommand = ""dmd"";
+        if(project.outputType == OutputType.Library) {
+            linkCommand ~= "" -lib"";
+        }
+        linkCommand ~= format("" -of%s"", buildNormalizedPath(rootPath, project.outputName));
+        if(!noMscorlib) {
+            compileCommand ~= "" "" ~ buildNormalizedPath(mscorlibPath, ""mscorlib.lib"");
+        }
+        foreach(library; libraries) {
+            linkCommand ~= format("" %s"", library);
+        }
+        foreach(objectFile; objectFiles) {
+            linkCommand ~= format("" %s"", objectFile);
+        }
+        if(tryRun(linkCommand)) {
             return 1;
         }
     }
-
-    //
-    // Link
-    //
-    string linkCommand = ""dmd"";
-    if(outputType == OutputType.Library) {
-        linkCommand ~= "" -lib"";
-    }
-    if(outputName.length > 0) {
-        linkCommand ~= format("" -of%s"", buildNormalizedPath(rootPath, outputName));
-    } else {
-        linkCommand ~= format("" -od%s"", rootPath);
-    }
-    if(!noMscorlib) {
-        compileCommand ~= "" "" ~ buildNormalizedPath(mscorlibPath, ""mscorlib.lib"");
-    }
-    foreach(library; libraries) {
-        linkCommand ~= format("" %s"", library);
-    }
-    foreach(objectFile; objectFiles) {
-        linkCommand ~= format("" %s"", objectFile);
-    }
-    if(tryRun(linkCommand)) {
-        return 1;
-    }
-
     writeln(""Success"");
     return 0;
 }
