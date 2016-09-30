@@ -29,6 +29,10 @@ namespace CSharpToD
                 return map[key];
             }
         }
+        public bool TryGetValue(T key, out List<K> value)
+        {
+            return map.TryGetValue(key, out value);
+        }
         IEnumerator IEnumerable.GetEnumerator()
         {
             throw new NotImplementedException();
@@ -63,6 +67,10 @@ namespace CSharpToD
             {
                 return map[key];
             }
+        }
+        public bool TryGetValue(T key, out HashSet<K> value)
+        {
+            return map.TryGetValue(key, out value);
         }
         IEnumerator IEnumerable.GetEnumerator()
         {

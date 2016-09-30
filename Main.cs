@@ -43,16 +43,13 @@ namespace CSharpToD
         public static String mscorlibPath;
         public static Config config;
 
-        public static Boolean log;
-        public static String logDirectory;
-
         static void Usage()
         {
             Console.WriteLine("csharptod [cs2d.config]");
             Console.WriteLine("Options:");
             Console.WriteLine("  -g                     Generate code with debugging around it");
-            Console.WriteLine("  --clean      Clean the generated first");
-            Console.WriteLine("  --no-warning Do not print the warnings");
+            Console.WriteLine("  --clean                Clean the generated first");
+            Console.WriteLine("  --no-warning           Do not print the warnings");
             Console.WriteLine("  --ignore-filre-errors  Ignore syntax/semantic errors");
             Console.WriteLine("  --print-source-files   Print source files when building");
             Console.WriteLine("  --skeleton             Generate types without code");
@@ -77,10 +74,6 @@ namespace CSharpToD
                     if(arg.Equals("--clean"))
                     {
                         clean = true;
-                    }
-                    else if(arg.Equals("--log"))
-                    {
-                        log = true;
                     }
                     else if(arg.Equals("--no-warnings"))
                     {
@@ -205,12 +198,6 @@ namespace CSharpToD
                 else
                 {
                     Directory.CreateDirectory(generatedCodePath);
-                }
-
-                if(log)
-                {
-                    logDirectory = Path.Combine(generatedCodePath, "logs");
-                    Directory.CreateDirectory(logDirectory);
                 }
 
                 MSBuildWorkspace workspace = MSBuildWorkspace.Create(config.msbuildProperties);

@@ -93,6 +93,7 @@
   <ItemGroup>
     <Compile Include="Config.cs" />
     <Compile Include="DlangBuildGenerator.cs" />
+    <Compile Include="FirstPass.cs" />
     <Compile Include="Main.cs" />
     <Compile Include="DlangGenerators.cs" />
     <Compile Include="DlangWriter.cs" />
