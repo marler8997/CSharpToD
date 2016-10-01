@@ -33,6 +33,42 @@ namespace CSharpToD
         {
             throw new NotImplementedException(String.Format("FirstPassVisitor for '{0}'", node.GetType().Name));
         }
+
+        public override void VisitAttributeList(AttributeListSyntax attributeList)
+        {
+            AttributeAdder attributeAdder = null;
+            if (attributeList.Target != null)
+            {
+                if (attributeList.Target.Identifier.Text == "assembly")
+                {
+                    attributeAdder = CSharpFileModelNodes.AddAssemblyAttribute;
+                }
+                else if (attributeList.Target.Identifier.Text == "module")
+                {
+                    attributeAdder = CSharpFileModelNodes.AddModuleAttribute;
+                }
+            }
+            foreach (AttributeSyntax attribute in attributeList.Attributes)
+            {
+                AddNewType(true, "mscorlib.System", "__DotNet__Attribute", 0);
+                AddNewType(true, "mscorlib.System", "__DotNet__AttributeStruct", 0);
+                ITypeSymbol attributeType = currentFileModel.semanticModel.GetTypeInfo(attribute).Type;
+                if (attributeType == null) throw new InvalidOperationException();
+                AddTypeAndNamespace(attributeType);
+                if(attributeAdder != null)
+                {
+                    attributeAdder(currentFileModelNodes, attribute);
+                }
+            }
+        }
+        void VisitAttributeLists(SyntaxList<AttributeListSyntax> attributeLists)
+        {
+            foreach (AttributeListSyntax attributeList in attributeLists)
+            {
+                VisitAttributeList(attributeList);
+            }
+        }
+
         public override void VisitNamespaceDeclaration(NamespaceDeclarationSyntax node)
         {
             // TODO: add types for attributes
@@ -172,6 +208,8 @@ namespace CSharpToD
                 return;
             }
 
+            VisitAttributeLists(typeDecl.AttributeLists);
+
             if (typeDecl.Modifiers.ContainsPartial())
             {
                 partialTypes.Add(typeDecl.Identifier.Text,
@@ -184,7 +222,7 @@ namespace CSharpToD
             {
                 if (typeDeclType == TypeDeclType.Class)
                 {
-                    AddNewType(true, "mscorlib.System", "DotNetObject", 0);
+                    AddNewType(true, "mscorlib.System", "__DotNet__Object", 0);
                 }
             }
             else
@@ -200,7 +238,7 @@ namespace CSharpToD
                     ITypeSymbol firstTypeSymbol = currentFileModel.semanticModel.GetTypeInfo(firstType.Type).Type;
                     if (firstTypeSymbol.TypeKind != TypeKind.Class)
                     {
-                        AddNewType(true, "mscorlib.System", "DotNetObject", 0);
+                        AddNewType(true, "mscorlib.System", "__DotNet__Object", 0);
                     }
                 }
 
@@ -234,7 +272,7 @@ namespace CSharpToD
             {
                 if (typeDecl.BaseList != null)
                 {
-                    AddNewType(true, "mscorlib.System", "DotNetObject", 0);
+                    AddNewType(true, "mscorlib.System", "__DotNet__Object", 0);
                 }
             }
         }
@@ -253,17 +291,22 @@ namespace CSharpToD
 
         public override void VisitDelegateDeclaration(DelegateDeclarationSyntax delegateDecl)
         {
+            VisitAttributeLists(delegateDecl.AttributeLists);
             AddTypeAndNamespace(currentFileModel.semanticModel.GetTypeInfo(delegateDecl.ReturnType).Type);
             foreach (ParameterSyntax param in delegateDecl.ParameterList.Parameters)
             {
+                //VisitAttributeLists(param.AttributeLists);
                 AddTypeAndNamespace(currentFileModel.semanticModel.GetTypeInfo(param.Type).Type);
             }
         }
         public override void VisitEnumDeclaration(EnumDeclarationSyntax enumDecl)
         {
+            VisitAttributeLists(enumDecl.AttributeLists);
             AddTypeAndNamespace(currentFileModel.semanticModel.GetDeclaredSymbol(enumDecl));
             foreach (EnumMemberDeclarationSyntax enumMember in enumDecl.Members)
             {
+                // TODO: generate reflection from attributes
+                //VisitAttributeLists(enumMember.AttributeLists);
                 if (enumMember.EqualsValue != null)
                 {
                     if (!CSharpToD.skeleton)
@@ -276,6 +319,7 @@ namespace CSharpToD
 
         public override void VisitFieldDeclaration(FieldDeclarationSyntax fieldDecl)
         {
+            VisitAttributeLists(fieldDecl.AttributeLists);
             ITypeSymbol fieldType = currentFileModel.semanticModel.GetTypeInfo(fieldDecl.Declaration.Type).Type;
             if (CSharpToD.generateDebug)
             {

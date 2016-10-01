@@ -105,6 +105,12 @@ void example()
 }
 ```
 
+Reflection
+--------------------------------------------------------------------------------
+The current plan for reflection is to generate immutable data structures that
+will represent the original .NET assembly reflection types.  The goal is to
+maintain the same reflection API and use the same types.
+
 The `internal` modifier
 --------------------------------------------------------------------------------
 C# supports the `internal` modifier which makes the code visible to the current

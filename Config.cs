@@ -11,6 +11,7 @@ namespace CSharpToD
         public readonly string projectFile;
         public OutputType? outputType;
         public List<string> typesToRemove = new List<string>();
+        public readonly List<IncludeSource> includeSources = new List<IncludeSource>();
         public ProjectConfig(string projectFile)
         {
             this.projectFile = projectFile;
@@ -28,6 +29,16 @@ namespace CSharpToD
             {
                 typesToRemove.Add(config.ProcessString(lineNumber,
                     config.OneArg("Remove", lineNumber, line, (uint)"Remove ".Length, "type")));
+            }
+            else if (line.StartsWith("IncludeSource "))
+            {
+                String @namespace;
+                String file = config.TwoArgs(out @namespace, "IncludeSource", lineNumber, line,
+                    (uint)"IncludeSource ".Length, "namespace", "file");
+                @namespace = config.ProcessString(lineNumber, @namespace);
+                file = config.ProcessString(lineNumber, file);
+                file = file.Replace('/', Path.DirectorySeparatorChar);
+                includeSources.Add(new IncludeSource(@namespace, file));
             }
             else
             {
@@ -58,7 +69,6 @@ namespace CSharpToD
         public readonly Boolean noMscorlib;
         public readonly List<string> includePaths = new List<string>();
         public readonly List<string> libraries = new List<string>();
-        public readonly List<IncludeSource> includeSources = new List<IncludeSource>();
         public readonly List<ProjectConfig> projects = new List<ProjectConfig>();
         public readonly Dictionary<string, string> vars = new Dictionary<string, string>();
         public readonly Dictionary<string, string> msbuildProperties = new Dictionary<string, string>();
@@ -144,16 +154,6 @@ namespace CSharpToD
                     {
                         libraries.Add(ProcessString(lineNumber,
                             OneArg("Library", lineNumber, line, (uint)"Library ".Length, "library")));
-                    }
-                    else if(line.StartsWith("IncludeSource "))
-                    {
-                        String @namespace;
-                        String file = TwoArgs(out @namespace, "IncludeSource", lineNumber, line,
-                            (uint)"IncludeSource ".Length, "namespace", "file");
-                        @namespace = ProcessString(lineNumber, @namespace);
-                        file = ProcessString(lineNumber, file);
-                        file = file.Replace('/', Path.DirectorySeparatorChar);
-                        includeSources.Add(new IncludeSource(@namespace, file));
                     }
                     else if(line.StartsWith("Set "))
                     {

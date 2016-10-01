@@ -220,21 +220,6 @@ namespace CSharpToD
                     return 1; // fail
                 }
 
-                /*
-                //
-                // Start Code Generation
-                //
-                Console.WriteLine();
-                Console.WriteLine("==================== Starting Code Generation =====================");
-                WorkspaceModels.AddCodeGenerationTasks(config.includeSources);
-
-                // Wait for all files in all code to be generated
-                if (!TaskManager.WaitLoop())
-                {
-                    return 1; // fail
-                }
-                */
-
                 DlangBuildGenerator.MakeDProjectFile(config, projectModelsArray);
 
                 //
@@ -467,7 +452,10 @@ namespace CSharpToD
             {
                 if (node.AttributeLists.Count > 0)
                 {
-                    csharpFileModel.containingProject.AddAttributeLists(csharpFileModel, node.AttributeLists);
+                    foreach (AttributeListSyntax attributeList in node.AttributeLists)
+                    {
+                        csharpFileModel.containingProject.Add(csharpFileModel, "", attributeList);
+                    }
                 }
                 if (node.Externs.HasItems())
                 {
@@ -486,7 +474,7 @@ namespace CSharpToD
             // Because these items inside other namespaces will be handled later
             if (currentNamespaceHeirarchy.Count == 0)
             {
-                csharpFileModel.containingProject.AddDecl(csharpFileModel, "", memberDecl);
+                csharpFileModel.containingProject.Add(csharpFileModel, "", memberDecl);
             }
         }
         public override void VisitEnumDeclaration(EnumDeclarationSyntax enumDecl)
@@ -532,7 +520,7 @@ namespace CSharpToD
         public override void VisitNamespaceDeclaration(NamespaceDeclarationSyntax namespaceDecl)
         {
             string @namespace = CreateNamespaceInCurrentContext(namespaceDecl.Name.GetIdentifierUsingVisitor());
-            csharpFileModel.containingProject.AddDecl(csharpFileModel, @namespace, namespaceDecl);
+            csharpFileModel.containingProject.Add(csharpFileModel, @namespace, namespaceDecl);
 
             currentNamespaceHeirarchy.Push(@namespace);
             try

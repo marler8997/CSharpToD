@@ -35,6 +35,7 @@
     <Reference Include="System" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Attributes.cs" />
     <Compile Include="Inheritance.cs" />
     <Compile Include="NestedNamespaces.cs" />
     <Compile Include="StructInterfaceBoxing.cs" />

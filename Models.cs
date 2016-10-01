@@ -76,6 +76,14 @@ namespace CSharpToD
             }
 
             //
+            // Add Include Files
+            //
+            foreach (IncludeSource includeSource in config.includeSources)
+            {
+                GetOrCreatGenerator(includeSource.@namespace).AddIncludeSource(includeSource.filename);
+            }
+
+            //
             // Start tasks to process the project source files
             //
             this.filesToProcess = (uint)System.Linq.Enumerable.Count(project.Documents);
@@ -103,18 +111,11 @@ namespace CSharpToD
             }
             return generator;
         }
-        public void AddAttributeLists(CSharpFileModel fileModel, SyntaxList<AttributeListSyntax> attributeLists)
+        public void Add(CSharpFileModel fileModel, String @namespace, SyntaxNode node)
         {
             lock (namespaceGeneratorMap)
             {
-                GetOrCreatGenerator("").AddAttributeLists(fileModel, attributeLists);
-            }
-        }
-        public void AddDecl(CSharpFileModel fileModel, String @namespace, MemberDeclarationSyntax decl)
-        {
-            lock (namespaceGeneratorMap)
-            {
-                GetOrCreatGenerator(@namespace).AddDecl(fileModel, decl);
+                GetOrCreatGenerator(@namespace).Add(fileModel, node);
             }
         }
 
@@ -164,7 +165,7 @@ namespace CSharpToD
     {
         public readonly ProjectModels containingProject;
         public readonly Document document;
-        SyntaxTree syntaxTree;
+        public SyntaxTree syntaxTree;
         public SemanticModel semanticModel;
 
         public CSharpFileModel(ProjectModels containingProject, Document document)

@@ -34,11 +34,15 @@ namespace CSharpToD
         Return, // Write the type as if it is a return type
         AfterDot, // Write the type as if the parent namespace/type has already been written
     }
+
     public class CSharpFileModelNodes : IComparable<CSharpFileModelNodes>
     {
         public readonly CSharpFileModel fileModel;
-        public readonly List<SyntaxList<AttributeListSyntax>> attributeLists = new List<SyntaxList<AttributeListSyntax>>();
-        public readonly List<MemberDeclarationSyntax> decls = new List<MemberDeclarationSyntax>();
+        public readonly List<SyntaxNode> syntaxNodes = new List<SyntaxNode>();
+
+        public List<AttributeSyntax> assemblyAttributes = null;
+        public List<AttributeSyntax> moduleAttributes = null;
+
         public CSharpFileModelNodes(CSharpFileModel fileModel)
         {
             this.fileModel = fileModel;
@@ -47,15 +51,39 @@ namespace CSharpToD
         {
             return fileModel.document.FilePath.CompareTo(other.fileModel.document.FilePath);
         }
-        public void AddAttributeLists(SyntaxList<AttributeListSyntax> attributeLists)
+        public void Add(SyntaxNode node)
         {
-            this.attributeLists.Add(attributeLists);
+            this.syntaxNodes.Add(node);
         }
-        public void AddDecl(MemberDeclarationSyntax decl)
+
+        public static void AddAssemblyAttribute(CSharpFileModelNodes fileModelNodes, AttributeSyntax attr)
         {
-            this.decls.Add(decl);
+            if(fileModelNodes.assemblyAttributes == null)
+            {
+                fileModelNodes.assemblyAttributes = new List<AttributeSyntax>();
+            }
+            fileModelNodes.assemblyAttributes.Add(attr);
+        }
+        public static void AddModuleAttribute(CSharpFileModelNodes fileModelNodes, AttributeSyntax attr)
+        {
+            if (fileModelNodes.moduleAttributes == null)
+            {
+                fileModelNodes.moduleAttributes = new List<AttributeSyntax>();
+            }
+            fileModelNodes.moduleAttributes.Add(attr);
+        }
+
+        public static List<AttributeSyntax> GetAssemblyAttributes(CSharpFileModelNodes fileModelNodes)
+        {
+            return fileModelNodes.assemblyAttributes;
+        }
+        public static List<AttributeSyntax> GetModuleAttributes(CSharpFileModelNodes fileModelNodes)
+        {
+            return fileModelNodes.moduleAttributes;
         }
     }
+    public delegate void AttributeAdder(CSharpFileModelNodes fileModel, AttributeSyntax attr);
+    public delegate List<AttributeSyntax> AttributeGetter(CSharpFileModelNodes fileModel);
 
     public class DlangGenerator : IComparable<DlangGenerator>
     {
@@ -71,7 +99,7 @@ namespace CSharpToD
 
         readonly Dictionary<CSharpFileModel, CSharpFileModelNodes> fileModelNodeMap =
             new Dictionary<CSharpFileModel, CSharpFileModelNodes>();
-        //List<String> includeSourceFiles;
+        List<String> includeSourceFiles;
 
         Dictionary<string, object> typeNameMap = new Dictionary<string, object>();
 
@@ -183,13 +211,17 @@ namespace CSharpToD
             }
             return fileModelNodes;
         }
-        public void AddAttributeLists(CSharpFileModel fileModel, SyntaxList<AttributeListSyntax> attributeLists)
+        public void Add(CSharpFileModel fileModel, SyntaxNode node)
         {
-            GetFileModelNodes(fileModel).attributeLists.Add(attributeLists);
+            GetFileModelNodes(fileModel).Add(node);
         }
-        public void AddDecl(CSharpFileModel fileModel, MemberDeclarationSyntax node)
+        public void AddIncludeSource(String includeSourceFile)
         {
-            GetFileModelNodes(fileModel).decls.Add(node);
+            if(includeSourceFiles == null)
+            {
+                includeSourceFiles = new List<string>();
+            }
+            includeSourceFiles.Add(includeSourceFile);
         }
 
         public void Finish()
@@ -264,9 +296,9 @@ namespace CSharpToD
                             writer.WriteLine(" File: {0}", fileModelNodes.fileModel.document.FilePath);
                             writer.WriteLine("--------------------------------------------------------------------------------");
                         }
-                        foreach (MemberDeclarationSyntax decl in fileModelNodes.decls)
+                        foreach (SyntaxNode decl in fileModelNodes.syntaxNodes)
                         {
-                            firstPass.currentFileModel = fileModelNodes.fileModel;
+                            firstPass.SetFileContext(fileModelNodes);
                             firstPass.Visit(decl);
                         }
                     }
@@ -278,7 +310,6 @@ namespace CSharpToD
                         writer.WriteLine("*/");
                     }
 
-                    /*
                     //
                     // Add Include Files
                     //
@@ -291,15 +322,18 @@ namespace CSharpToD
                             {
                                 throw new InvalidOperationException(String.Format(
                                     "Include Source does not exist (namespace={0}, file={1})",
-                                    @namespace, includeSourceFullPath));
+                                    csharpNamespace, includeSourceFullPath));
                             }
+                            writer.WriteLine();
+                            writer.WriteLine("//");
+                            writer.WriteLine("// Source Included from '{0}'", includeSourceFullPath);
+                            writer.WriteLine("//");
                             using (FileStream stream = new FileStream(includeSourceFullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
                             {
                                 writer.Write(stream);
                             }
                         }
                     }
-                    */
 
                     if (CSharpToD.generateDebug)
                     {
@@ -409,24 +443,79 @@ namespace CSharpToD
                             }
                         }
                     }
-                    DlangVisitorGenerator visitor = new DlangVisitorGenerator(this, writer, firstPass);
-                    foreach (CSharpFileModelNodes fileModelNodes in fileModelNodesArray)
+
                     {
-                        visitor.currentFileModel = fileModelNodes.fileModel;
-                        writer.WriteLine();
-                        writer.WriteLine("//");
-                        writer.WriteLine("// Source Generated From '{0}'", fileModelNodes.fileModel.document.FilePath);
-                        writer.WriteLine("//");
-                        foreach (SyntaxList<AttributeListSyntax> attrListList in fileModelNodes.attributeLists)
+                        DlangVisitorGenerator visitor = new DlangVisitorGenerator(this, writer, firstPass);
+
+                        //
+                        // Write Assembly and Module Attributes
+                        //
                         {
-                            foreach (AttributeListSyntax attrList in attrListList)
+                            String target = "assembly";
+                            AttributeGetter attributeGetter = CSharpFileModelNodes.GetAssemblyAttributes;
+                            while (true)
                             {
-                                writer.WriteIgnored(attrList.GetText());
+                                bool startedArray = false;
+                                foreach (CSharpFileModelNodes fileModelNodes in fileModelNodesArray)
+                                {
+                                    visitor.SetFileContext(fileModelNodes);
+                                    List<AttributeSyntax> attributes = attributeGetter(fileModelNodes);
+                                    if (attributes != null)
+                                    {
+                                        if (!startedArray)
+                                        {
+                                            writer.WriteLine();
+                                            writer.WriteLine("immutable __DotNet__AttributeStruct[] {0}Attributes = [", target);
+                                            writer.Tab();
+                                            startedArray = true;
+                                        }
+                                        foreach (AttributeSyntax attribute in attributes)
+                                        {
+                                            ITypeSymbol attributeType = fileModelNodes.fileModel.semanticModel.GetTypeInfo(attribute).Type;
+                                            if (attributeType == null) throw new InvalidOperationException();
+                                            visitor.WriteAttributeConstruction(target, attribute, attributeType, attribute.ArgumentList);
+                                            writer.WriteLine(",");
+                                        }
+                                    }
+                                }
+
+                                if (startedArray)
+                                {
+                                    writer.Untab();
+                                    writer.WriteLine("];");
+                                    if (csharpNamespace.Length > 0)
+                                    {
+                                        throw new InvalidOperationException(String.Format(
+                                            "CSharpError? found a(n) {0} attribute inside a namespace", target));
+                                    }
+                                }
+
+                                if (attributeGetter == CSharpFileModelNodes.GetAssemblyAttributes)
+                                {
+                                    attributeGetter = CSharpFileModelNodes.GetModuleAttributes;
+                                    target = "module";
+                                }
+                                else
+                                {
+                                    break;
+                                }
                             }
                         }
-                        foreach (MemberDeclarationSyntax decl in fileModelNodes.decls)
+
+                        //
+                        // Generate Code for each file
+                        //
+                        foreach (CSharpFileModelNodes fileModelNodes in fileModelNodesArray)
                         {
-                            visitor.Visit(decl);
+                            visitor.SetFileContext(fileModelNodes);
+                            writer.WriteLine();
+                            writer.WriteLine("//");
+                            writer.WriteLine("// Source Generated From '{0}'", fileModelNodes.fileModel.document.FilePath);
+                            writer.WriteLine("//");
+                            foreach (SyntaxNode node in fileModelNodes.syntaxNodes)
+                            {
+                                visitor.Visit(node);
+                            }
                         }
                     }
                 }
@@ -490,7 +579,19 @@ namespace CSharpToD
             this.generator = generator;
         }
 
-        public CSharpFileModel currentFileModel;
+        protected CSharpFileModel currentFileModel;
+        protected CSharpFileModelNodes currentFileModelNodes;
+        public void SetFileContext(CSharpFileModelNodes fileModelNodes)
+        {
+            this.currentFileModel = fileModelNodes.fileModel;
+            this.currentFileModelNodes = fileModelNodes;
+        }
+        public void SetFileContext(CSharpFileModel fileModel)
+        {
+            this.currentFileModel = fileModel;
+            this.currentFileModelNodes = null;
+        }
+
 
         protected bool TypeIsRemoved(TypeDeclarationSyntax typeDecl)
         {
@@ -551,6 +652,88 @@ namespace CSharpToD
         {
             throw new NotImplementedException(String.Format("DlangVisitorGenerator for {0}", node.GetType().Name));
         }
+
+
+        void WriteLeadingComments(SyntaxNode node, bool inline)
+        {
+            if (inline)
+            {
+                writer.Write("/*todo: inline leading comments*/");
+            }
+            else
+            {
+                writer.WriteCommented(currentFileModel.syntaxTree.GetText().GetSubText(node.GetLeadingTrivia().Span));
+            }
+        }
+
+        static readonly Dictionary<string, string> AttributeTargetMap = new Dictionary<string, string>
+        {
+            {"assembly", "assembly" },
+            {"module", "module_" },
+        };
+        public void WriteAttributeConstruction(String target, SyntaxNode location,
+            ITypeSymbol attributeType, AttributeArgumentListSyntax arguments)
+        {
+            writer.Write("__DotNet__Attribute!(");
+            if (target != null)
+            {
+                writer.Write("__DotNet__AttributeStruct.Target.{0}, ", AttributeTargetMap[target]);
+            }
+            WriteDlangType(location, TypeContext.Default, attributeType);
+            writer.Write(".stringof");
+            if (arguments != null)
+            {
+                writer.Write("/*");
+                foreach (AttributeArgumentSyntax argument in arguments.Arguments)
+                {
+                    writer.Write(", {0}", argument.GetText().ToString().Trim().Replace("/*", "").Replace("*/", ""));
+                }
+                writer.Write("*/");
+            }
+            writer.Write(")");
+        }
+
+        void WriteAttribute(AttributeTargetSpecifierSyntax target, AttributeSyntax attribute, Boolean inline)
+        {
+            ITypeSymbol attributeType = currentFileModel.semanticModel.GetTypeInfo(attribute).Type;
+            if (attributeType == null) throw new InvalidOperationException();
+
+            String targetString = (target == null) ? null : target.Identifier.Text;
+
+            if (targetString == "assembly" || targetString == "module")
+            {
+                // These attributes will be moved to the no namespace package
+            }
+            else
+            {
+                writer.Write("@");
+                WriteAttributeConstruction(targetString, attribute, attributeType, attribute.ArgumentList);
+                if (!inline)
+                {
+                    writer.WriteLine();
+                }
+            }
+        }
+        public void WriteAttributes(AttributeListSyntax attributeList, Boolean inline)
+        {
+            WriteLeadingComments(attributeList, inline);
+            foreach (AttributeSyntax attribute in attributeList.Attributes)
+            {
+                WriteAttribute(attributeList.Target, attribute, inline);
+            }
+        }
+        public void WriteAttributeLists(SyntaxList<AttributeListSyntax> attributeLists, Boolean inline)
+        {
+            foreach (AttributeListSyntax attributeList in attributeLists)
+            {
+                WriteAttributes(attributeList, inline);
+            }
+        }
+
+        public override void VisitAttributeList(AttributeListSyntax attributeList)
+        {
+            WriteAttributes(attributeList, false);
+        }
         public override void VisitNamespaceDeclaration(NamespaceDeclarationSyntax namespaceDecl)
         {
             String namespaceName = namespaceDecl.Name.GetIdentifierUsingVisitor();
@@ -575,21 +758,6 @@ namespace CSharpToD
                 finally
                 {
                     insideNamespace = false;
-                }
-            }
-        }
-        static void WriteAttributes(DlangWriter writer, SyntaxList<AttributeListSyntax> attributeLists, bool inline)
-        {
-            foreach (var attributeList in attributeLists)
-            {
-                String attributeCode = attributeList.GetText().ToString().Trim();
-                if (inline)
-                {
-                    writer.WriteCommentedInline(attributeCode);
-                }
-                else
-                {
-                    writer.WriteCommentedLine(attributeCode);
                 }
             }
         }
@@ -623,7 +791,7 @@ namespace CSharpToD
                 partialTypeDecls = firstPass.partialTypes[typeDecl.Identifier.Text];
                 if(!partialTypeDecls.IsFirst(typeDecl))
                 {
-                    // Only generate the contents for the first type
+                    writer.WriteLine("// partial class '{0}' moved", typeDecl.Identifier.Text);
                     return;
                 }
                 typeSymbol = partialTypeDecls[0].fileModel.semanticModel.GetDeclaredSymbol(partialTypeDecls[0].typeDecl);
@@ -632,12 +800,12 @@ namespace CSharpToD
                     CSharpFileModel saveModel = currentFileModel;
                     try
                     {
-                        currentFileModel = partialTypeDecl.fileModel;
-                        WriteAttributes(writer, partialTypeDecl.typeDecl.AttributeLists, false);
+                        SetFileContext(partialTypeDecl.fileModel);
+                        WriteAttributeLists(partialTypeDecl.typeDecl.AttributeLists, false);
                     }
                     finally
                     {
-                        currentFileModel = saveModel;
+                        SetFileContext(saveModel);
                     }
                 }
             }
@@ -645,7 +813,7 @@ namespace CSharpToD
             {
                 typeSymbol = currentFileModel.semanticModel.GetDeclaredSymbol(typeDecl);
                 partialTypeDecls = null;
-                WriteAttributes(writer, typeDecl.AttributeLists, false);
+                WriteAttributeLists(typeDecl.AttributeLists, false);
             }
             if (typeSymbol == null)
             {
@@ -827,7 +995,7 @@ namespace CSharpToD
             {
                 if (typeDeclType == TypeDeclType.Class)
                 {
-                    writer.Write(" : DotNetObject");
+                    writer.Write(" : __DotNet__Object");
                 }
             }
             else
@@ -846,7 +1014,7 @@ namespace CSharpToD
                     ITypeSymbol firstTypeSymbol = currentFileModel.semanticModel.GetTypeInfo(firstType.Type).Type;
                     if (firstTypeSymbol.TypeKind != TypeKind.Class)
                     {
-                        writer.Write("DotNetObject");
+                        writer.Write("__DotNet__Object");
                         atFirst = false;
                     }
                 }
@@ -891,7 +1059,7 @@ namespace CSharpToD
         }
         public override void VisitDelegateDeclaration(DelegateDeclarationSyntax delegateDecl)
         {
-            WriteAttributes(writer, delegateDecl.AttributeLists, false);
+            WriteAttributeLists(delegateDecl.AttributeLists, false);
 
             ModifierCategories modifiers = new ModifierCategories(delegateDecl.Modifiers);
             if (modifiers.@abstract || modifiers.@sealed || modifiers.@partial ||
@@ -955,8 +1123,11 @@ namespace CSharpToD
 
         void WriteParameter(ParameterSyntax param)
         {
-            //writer.WriteCommentedInline("param");
-            WriteAttributes(writer, param.AttributeLists, true);
+            if (param.AttributeLists.Count > 0)
+            {
+                writer.Write("/*todo: param attributes*/");
+                //WriteAttributeLists(param.AttributeLists, true);
+            }
             ParamModifiers modifiers = new ParamModifiers(param.Modifiers);
 
             if(modifiers.refout != null)
@@ -978,10 +1149,7 @@ namespace CSharpToD
 
         public override void VisitEnumDeclaration(EnumDeclarationSyntax enumDecl)
         {
-            foreach (AttributeListSyntax attrList in enumDecl.AttributeLists)
-            {
-                writer.WriteIgnored(attrList.GetText());
-            }
+            WriteAttributeLists(enumDecl.AttributeLists, false);
 
             ModifierCategories modifiers = new ModifierCategories(enumDecl.Modifiers);
             if(modifiers.@abstract || modifiers.partial || modifiers.@sealed ||
@@ -1013,9 +1181,10 @@ namespace CSharpToD
                 writer.Tab();
                 foreach (EnumMemberDeclarationSyntax enumMember in enumDecl.Members)
                 {
-                    foreach (AttributeListSyntax attrList in enumMember.AttributeLists)
                     {
-                        writer.WriteIgnored(attrList.GetText());
+                        WriteLeadingComments(enumMember, false);
+                        // Enums cannot have attributes in D
+                        //WriteAttributeLists(enumMember.AttributeLists, false);
                     }
                     writer.Write(GetIdentifierName(enumMember.Identifier.Text));
                     if (enumMember.EqualsValue != null)
@@ -1055,17 +1224,10 @@ namespace CSharpToD
             return name;
         }
 
-        public override void VisitFieldDeclaration(FieldDeclarationSyntax fieldDecl)
+        void WriteFieldType(FieldDeclarationSyntax fieldDecl, ModifierCategories modifiers, ITypeSymbol typeSymbol)
         {
-            //writer.WriteCommentedLine("TODO: generate field");
-            foreach (AttributeListSyntax attrList in fieldDecl.AttributeLists)
-            {
-                writer.WriteIgnored(attrList.GetText());
-            }
 
-            ModifierCategories modifiers = new ModifierCategories(fieldDecl.Modifiers);
-
-            if(modifiers.partial || modifiers.@abstract || modifiers.@sealed)
+            if (modifiers.partial || modifiers.@abstract || modifiers.@sealed)
             {
                 throw new SyntaxNodeException(fieldDecl, "Invalid modifier for field");
             }
@@ -1075,79 +1237,113 @@ namespace CSharpToD
                 writer.Write(modifiers.dlangVisibility);
                 writer.Write(" ");
             }
-            if(modifiers.@static)
+            if (modifiers.@static)
             {
                 writer.Write("static ");
             }
-            if(modifiers.@const)
+            if (modifiers.@const)
             {
                 writer.Write("enum "); // TODO: not sure if this is equivalent
             }
-            if(modifiers.@readonly)
+            if (modifiers.@readonly)
             {
                 writer.Write("immutable "); // TODO: not sure if this is equivalent
             }
             if (modifiers.@new)
             {
-                writer.WriteCommentedInline("todo: new modifier");
+                writer.Write("/*todo: new modifier*/ ");
             }
             if (modifiers.@volatile)
             {
-                writer.WriteCommentedInline("todo: volatile");
+                writer.Write("/*todo: volatile*/ ");
             }
-            if(modifiers.@fixed)
+            if (modifiers.@fixed)
             {
-                writer.WriteCommentedInline("todo: fixed modifier");
+                writer.Write("/*todo: fixed*/ ");
             }
-            
-            ITypeSymbol typeSymbol = currentFileModel.semanticModel.GetTypeInfo(fieldDecl.Declaration.Type).Type;
             WriteDlangType(fieldDecl.Declaration.Type, TypeContext.Default, typeSymbol);
-            writer.Write(" ");
-
-            bool atFirst = true;
-            foreach (VariableDeclaratorSyntax variableDecl in fieldDecl.Declaration.Variables)
+        }
+        void WriteFieldIdentifier(FieldDeclarationSyntax fieldDecl, ModifierCategories modifiers, ITypeSymbol typeSymbol, VariableDeclaratorSyntax variableDecl)
+        {
+            String identifierName = GetIdentifierName(variableDecl.Identifier.Text);
+            if (typeSymbol.DlangTypeStringEqualsIdentifier(identifierName))
             {
-                if (atFirst) { atFirst = false; } else { writer.Write(", "); }
+                identifierName = identifierName + "_";
+            }
+            writer.Write(identifierName);
 
+            if (variableDecl.Initializer != null)
+            {
+                if (CSharpToD.skeleton)
                 {
-                    String identifierName = GetIdentifierName(variableDecl.Identifier.Text);
-                    if(typeSymbol.DlangTypeStringEqualsIdentifier(identifierName))
+                    if (modifiers.@const)
                     {
-                        identifierName = identifierName + "_";
-                    }
-                    writer.Write(identifierName);
-                }
-
-                if(variableDecl.ArgumentList != null)
-                {
-                    writer.WriteCommentedInline(String.Format("todo: implement field ArgumentList '{0}'",
-                        variableDecl.ArgumentList.GetText().ToString().Trim()));
-                }
-                if(variableDecl.Initializer != null)
-                {
-                    if (CSharpToD.skeleton)
-                    {
-                        if (modifiers.@const)
-                        {
-                            // need to write a value
-                            writer.Write(" = ");
-                            WriteDlangDefaultValue(fieldDecl.Declaration.Type, typeSymbol);
-                        }
-                        else
-                        {
-                            writer.WriteCommentedInline("initializer stripped in skeleton mode");
-                        }
+                        // need to write a value
+                        writer.Write(" = ");
+                        WriteDlangDefaultValue(fieldDecl.Declaration.Type, typeSymbol);
                     }
                     else
                     {
-                        writer.WriteCommentedInline("todo: implement initializer");
-                        writer.Write(" = ");
-                        WriteDlangDefaultValue(fieldDecl.Declaration.Type, typeSymbol);
-                        //Visit(variableDecl.Initializer);
+                        writer.WriteCommentedInline("initializer stripped in skeleton mode");
                     }
                 }
+                else
+                {
+                    writer.WriteCommentedInline("todo: implement initializer");
+                    writer.Write(" = ");
+                    WriteDlangDefaultValue(fieldDecl.Declaration.Type, typeSymbol);
+                    //Visit(variableDecl.Initializer);
+                }
             }
-            writer.WriteLine(";");
+        }
+        public override void VisitFieldDeclaration(FieldDeclarationSyntax fieldDecl)
+        {
+            ModifierCategories modifiers = new ModifierCategories(fieldDecl.Modifiers);
+            ITypeSymbol typeSymbol = currentFileModel.semanticModel.GetTypeInfo(fieldDecl.Declaration.Type).Type;
+
+            //
+            // Print non-array variables
+            //
+            {
+                bool atFirst = true;
+                foreach (VariableDeclaratorSyntax variableDecl in fieldDecl.Declaration.Variables)
+                {
+                    if (variableDecl.ArgumentList == null)
+                    {
+                        if (atFirst)
+                        {
+                            WriteAttributeLists(fieldDecl.AttributeLists, false);
+                            WriteFieldType(fieldDecl, modifiers, typeSymbol);
+                            writer.Write(" ");
+                            atFirst = false;
+                        }
+                        else
+                        {
+                            writer.Write(", ");
+                        }
+                        WriteFieldIdentifier(fieldDecl, modifiers, typeSymbol, variableDecl);
+                    }
+                }
+                if (!atFirst)
+                {
+                    writer.WriteLine(";");
+                }
+            }
+
+            //
+            // Print array variables
+            //
+            foreach (VariableDeclaratorSyntax variableDecl in fieldDecl.Declaration.Variables)
+            {
+                if (variableDecl.ArgumentList != null)
+                {
+                    WriteAttributeLists(fieldDecl.AttributeLists, false);
+                    WriteFieldType(fieldDecl, modifiers, typeSymbol);
+                    writer.Write("{0} ", variableDecl.ArgumentList.GetText());
+                    WriteFieldIdentifier(fieldDecl, modifiers, typeSymbol, variableDecl);
+                    writer.WriteLine(";");
+                }
+            }
         }
 
         public void WriteDlangTypeDeclName(String dlangModule, String identifier, UInt32 genericTypeCount)
@@ -1506,8 +1702,8 @@ namespace CSharpToD
     {
         static readonly Dictionary<string, DType> PrimitiveSystemDeclTypeMap = new Dictionary<string, DType>
         {
-            { "Object", new DType(false, "DotNetObject") },
-            {"Exception", new DType(false, "DotNetException") },
+            { "Object", new DType(false, "__DotNet__Object") },
+            {"Exception", new DType(false, "__DotNet__Exception") },
         };
         static readonly Dictionary<string, DType> PrimitiveSystemTypeMap = new Dictionary<string, DType>
         {
@@ -1533,12 +1729,12 @@ namespace CSharpToD
             {"Single", new DType(true, "float") },
             {"Double", new DType(true, "double") },
 
-            { "Object", new DType(false, "DotNetObject") },
-            {"Exception", new DType(false, "DotNetException") },
+            { "Object", new DType(false, "__DotNet__Object") },
+            {"Exception", new DType(false, "__DotNet__Exception") },
         };
         static readonly Dictionary<string, DType> PrimitiveSystemReflectionTypeMap = new Dictionary<string, DType>
         {
-            {"TypeInfo", new DType(false, "DotNetTypeInfo") },
+            {"TypeInfo", new DType(false, "__DotNet__TypeInfo") },
         };
         public static DType DotNetToD(TypeContext context, string moduleAndContainingType, string typeName, UInt32 genericTypeCount)
         {

@@ -22,7 +22,7 @@ namespace CSharpToD
         {
             sink.Dispose();
         }
-        
+        /*
         public void WriteIgnored(SourceText text)
         {
             foreach (TextLine line in text.Lines)
@@ -32,6 +32,37 @@ namespace CSharpToD
                 {
                     Write("// Ignored: ");
                     WriteLine(trimmed);
+                }
+            }
+        }
+        */
+        public void WriteCommented(SourceText text)
+        {
+            foreach (TextLine line in text.Lines)
+            {
+                int offset;
+                char c = '\0';
+                for (offset = line.Start; offset < line.End; offset++)
+                {
+                    c = text[offset];
+                    if (c != ' ' && c != '\t')
+                    {
+                        break;
+                    }
+                }
+                if (offset >= line.End)
+                {
+                    //WriteLine(); // just a blank line
+                    continue;
+                }
+                if (c == '/' && (offset + 1) < line.End && text[offset+1] == '/')
+                {
+                    WriteLine(text.GetSubText(new TextSpan(offset, line.End-offset)).ToString());
+                }
+                else
+                {
+                    Write("// ");
+                    WriteLine(text.GetSubText(new TextSpan(offset, line.End-offset)).ToString().Replace("/*", "").Replace("*/", ""));
                 }
             }
         }
