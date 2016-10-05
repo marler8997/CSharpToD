@@ -31,7 +31,7 @@ namespace CSharpToD
         }
         public override void DefaultVisit(SyntaxNode node)
         {
-            throw new NotImplementedException(String.Format("FirstPassVisitor for '{0}'", node.GetType().Name));
+            throw new SyntaxNodeException(node, String.Format("FirstPassVisitor for '{0}' is not implemented", node.GetType().Name));
         }
 
         public override void VisitAttributeList(AttributeListSyntax attributeList)
@@ -215,7 +215,7 @@ namespace CSharpToD
                 partialTypes.Add(typeDecl.Identifier.Text,
                     new FileAndTypeDecl(currentFileModel, typeDecl));
             }
-            
+
             AddTypeAndNamespace(currentFileModel.semanticModel.GetDeclaredSymbol(typeDecl));
 
             if (typeDecl.BaseList == null)
@@ -327,6 +327,17 @@ namespace CSharpToD
                     "FirstPass: VisitField Type={0}", fieldDecl.Declaration.Type.GetText().ToString().Trim()));
             }
             AddTypeAndNamespace(fieldType);
+            if (!CSharpToD.skeleton)
+            {
+                foreach (VariableDeclaratorSyntax variableDecl in fieldDecl.Declaration.Variables)
+                {
+                    if (variableDecl.ArgumentList != null)
+                    {
+                        Visit(variableDecl.ArgumentList);
+                    }
+                    Visit(variableDecl.Initializer);
+                }
+            }
         }
         public override void VisitPropertyDeclaration(PropertyDeclarationSyntax node)
         {
@@ -365,26 +376,18 @@ namespace CSharpToD
             // TODO: implement this
         }
 
-
         //
-        // Expressions
+        // Simple Syntax
         //
-        public override void VisitParenthesizedExpression(ParenthesizedExpressionSyntax parensExpression)
+        public override void VisitGenericName(GenericNameSyntax genericName)
         {
-            Visit(parensExpression.Expression);
+            // TODO: generic name may not be referring to a type, it could be a method.
+            //       figure out how to handle this.
+            AddTypeAndNamespaceFromSyntax(genericName, false);
         }
-        public override void VisitAssignmentExpression(AssignmentExpressionSyntax node)
+        public override void VisitEqualsValueClause(EqualsValueClauseSyntax equalsValueClause)
         {
-            throw new NotImplementedException("VisitAssignmentExpression");
-        }
-        public override void VisitLiteralExpression(LiteralExpressionSyntax literalExpression)
-        {
-            // I think literals do not contain types...not 100% sure though
-        }
-        public override void VisitBinaryExpression(BinaryExpressionSyntax binaryExpression)
-        {
-            Visit(binaryExpression.Left);
-            Visit(binaryExpression.Right);
+            Visit(equalsValueClause.Value);
         }
         public override void VisitIdentifierName(IdentifierNameSyntax identifier)
         {
@@ -394,6 +397,62 @@ namespace CSharpToD
                 // TODO: I will need the type namespace, but maybe not the type symbol?
                 AddTypeAndNamespace(typeInfo.Type);
             }
+        }
+        public override void VisitParameter(ParameterSyntax parameter)
+        {
+            VisitAttributeLists(parameter.AttributeLists);
+            if (parameter.Type != null)
+            {
+                AddTypeAndNamespaceFromSyntax(parameter.Type, false);
+            }
+            Visit(parameter.Default);
+        }
+        public override void VisitSimpleLambdaExpression(SimpleLambdaExpressionSyntax lambdaExpression)
+        {
+            Visit(lambdaExpression.Parameter);
+            Visit(lambdaExpression.Body);
+        }
+        public override void VisitParenthesizedLambdaExpression(ParenthesizedLambdaExpressionSyntax lambdaExpression)
+        {
+            Visit(lambdaExpression.ParameterList);
+            Visit(lambdaExpression.Body);
+        }
+        public override void VisitBracketedArgumentList(BracketedArgumentListSyntax argumentList)
+        {
+            foreach (ArgumentSyntax argument in argumentList.Arguments)
+            {
+                Visit(argument);
+            }
+        }
+
+
+        //
+        // Expressions
+        //
+        public override void VisitParenthesizedExpression(ParenthesizedExpressionSyntax parensExpression)
+        {
+            Visit(parensExpression.Expression);
+        }
+        public override void VisitAssignmentExpression(AssignmentExpressionSyntax assignmentExpression)
+        {
+            Visit(assignmentExpression.Left);
+            Visit(assignmentExpression.Right);
+        }
+        public override void VisitLiteralExpression(LiteralExpressionSyntax literalExpression)
+        {
+            // I think literals do not contain types...not 100% sure though
+        }
+        public override void VisitInitializerExpression(InitializerExpressionSyntax initializerExpression)
+        {
+            foreach (ExpressionSyntax expression in initializerExpression.Expressions)
+            {
+                Visit(expression);
+            }
+        }
+        public override void VisitBinaryExpression(BinaryExpressionSyntax binaryExpression)
+        {
+            Visit(binaryExpression.Left);
+            Visit(binaryExpression.Right);
         }
         public override void VisitCastExpression(CastExpressionSyntax cast)
         {
@@ -410,21 +469,189 @@ namespace CSharpToD
                 AddTypeAndNamespace(typeInfo.Type);
             }
         }
+
+
+        void AddTypeAndNamespaceFromSyntax(TypeSyntax typeSyntax, bool convertedType)
+        {
+            if (convertedType)
+            {
+                throw new NotImplementedException();
+            }
+
+            {
+                TypeInfo typeInfo = currentFileModel.semanticModel.GetTypeInfo(typeSyntax);
+                ITypeSymbol typeSymbol = typeInfo.Type;
+                ITypeSymbol convertedTypeSymbol = typeInfo.ConvertedType;
+                if (typeSymbol != null)
+                {
+                    AddTypeAndNamespace(typeSymbol);
+                    return;
+                }
+            }
+
+            // the type syntax was not a type
+            SymbolInfo symbolInfo = currentFileModel.semanticModel.GetSymbolInfo(typeSyntax);
+            if (symbolInfo.Symbol == null)
+            {
+                throw new InvalidOperationException();
+            }
+            if (CSharpToD.generateDebug)
+            {
+                writer.Write("// '{0}' is not a type, it is a(n) '{1}'",
+                    typeSyntax.GetText().ToString().Trim().Replace("\n", "").Replace("\r\n",""),
+                    symbolInfo.Symbol.Kind);
+            }
+        }
+
         public override void VisitCheckedExpression(CheckedExpressionSyntax checkedExpression)
         {
             Visit(checkedExpression.Expression);
+        }
+        public override void VisitTypeOfExpression(TypeOfExpressionSyntax typeofExpression)
+        {
+            AddTypeAndNamespaceFromSyntax(typeofExpression.Type, false);
+        }
+        public override void VisitDefaultExpression(DefaultExpressionSyntax defaultExpression)
+        {
+            AddTypeAndNamespaceFromSyntax(defaultExpression.Type, false);
         }
         public override void VisitPrefixUnaryExpression(PrefixUnaryExpressionSyntax unaryExpression)
         {
             Visit(unaryExpression.Operand);
         }
-        public override void VisitEqualsValueClause(EqualsValueClauseSyntax equalsValueClause)
+        public override void VisitConditionalExpression(ConditionalExpressionSyntax conditionalExpression)
         {
-            Visit(equalsValueClause.Value);
+            Visit(conditionalExpression.Condition);
+            Visit(conditionalExpression.WhenTrue);
+            Visit(conditionalExpression.WhenFalse);
         }
-        public override void VisitObjectCreationExpression(ObjectCreationExpressionSyntax node)
+        public override void VisitInvocationExpression(InvocationExpressionSyntax invocationExpression)
         {
-            throw new NotImplementedException();
+            // TODO: the expression is a method...figure out how to handle this
+            Visit(invocationExpression.Expression);
+            foreach (ArgumentSyntax argumentSyntax in invocationExpression.ArgumentList.Arguments)
+            {
+                Visit(argumentSyntax);
+            }
+        }
+        public override void VisitObjectCreationExpression(ObjectCreationExpressionSyntax objectCreationExpression)
+        {
+            if (objectCreationExpression.Initializer != null)
+            {
+                throw new InvalidOperationException(String.Format(
+                    "ObjectCreationExpression.Initializer is not null? \"{0}\"",
+                    objectCreationExpression.Initializer.GetText().ToString().Trim()));
+            }
+
+            AddTypeAndNamespaceFromSyntax(objectCreationExpression.Type, false);
+            Visit(objectCreationExpression.ArgumentList);
+        }
+        public override void VisitArrayCreationExpression(ArrayCreationExpressionSyntax newArrayExpression)
+        {
+            Visit(newArrayExpression.Type);
+            Visit(newArrayExpression.Initializer);
+        }
+        public override void VisitArrayType(ArrayTypeSyntax arrayTypeSyntax)
+        {
+            Visit(arrayTypeSyntax.ElementType);
+            foreach (ArrayRankSpecifierSyntax rankSpecifier in arrayTypeSyntax.RankSpecifiers)
+            {
+                foreach (ExpressionSyntax rankSpecifierSize in rankSpecifier.Sizes)
+                {
+                    Visit(rankSpecifierSize);
+                }
+            }
+        }
+        public override void VisitPredefinedType(PredefinedTypeSyntax predefinedType)
+        {
+            TypeInfo typeInfo = currentFileModel.semanticModel.GetTypeInfo(predefinedType);
+            if (typeInfo.Type == null)
+            {
+                throw new InvalidOperationException();
+            }
+            AddTypeAndNamespace(typeInfo.Type);
+        }
+        public override void VisitArgumentList(ArgumentListSyntax node)
+        {
+            foreach (ArgumentSyntax argumentSyntax in node.Arguments)
+            {
+                Visit(argumentSyntax);
+            }
+        }
+        public override void VisitArgument(ArgumentSyntax argumentSyntax)
+        {
+            Visit(argumentSyntax.Expression);
+        }
+        public override void VisitOmittedArraySizeExpression(OmittedArraySizeExpressionSyntax node)
+        {
+            if (node.OmittedArraySizeExpressionToken.Text.Length != 0)
+            {
+                throw new NotImplementedException(String.Format("OmittedArraySizeExpressionSyntax \"{0}\"",
+                    node.OmittedArraySizeExpressionToken.Text));
+            }
+        }
+
+        public override void VisitParameterList(ParameterListSyntax parameterList)
+        {
+            foreach (ParameterSyntax parameterSyntax in parameterList.Parameters)
+            {
+                VisitParameter(parameterSyntax);
+            }
+        }
+
+        public override void VisitAnonymousMethodExpression(AnonymousMethodExpressionSyntax anonymousMethod)
+        {
+            if (anonymousMethod.ParameterList != null)
+            {
+                VisitParameterList(anonymousMethod.ParameterList);
+            }
+            Visit(anonymousMethod.Body);
+        }
+
+        public override void VisitBlock(BlockSyntax blockSyntax)
+        {
+            if (!CSharpToD.skeleton)
+            {
+                // TODO: could blockSyntax.Statements be null?
+                foreach (StatementSyntax statement in blockSyntax.Statements)
+                {
+                    Visit(statement);
+                }
+            }
+        }
+
+        //
+        // Statements
+        //
+        public override void VisitExpressionStatement(ExpressionStatementSyntax expressionStatement)
+        {
+            Visit(expressionStatement.Expression);
+        }
+        public override void VisitReturnStatement(ReturnStatementSyntax returnStatement)
+        {
+            Visit(returnStatement.Expression);
+        }
+        public override void VisitLocalDeclarationStatement(LocalDeclarationStatementSyntax node)
+        {
+            VisitVariableDeclaration(node.Declaration);
+        }
+        public override void VisitVariableDeclaration(VariableDeclarationSyntax variableDecl)
+        {
+            AddTypeAndNamespaceFromSyntax(variableDecl.Type, false);
+            foreach (VariableDeclaratorSyntax variableDeclarator in variableDecl.Variables)
+            {
+                if (variableDeclarator.ArgumentList != null)
+                {
+                    Visit(variableDeclarator.ArgumentList);
+                }
+                Visit(variableDeclarator.Initializer);
+            }
+        }
+        public override void VisitIfStatement(IfStatementSyntax ifStatement)
+        {
+            Visit(ifStatement.Condition);
+            Visit(ifStatement.Statement);
+            Visit(ifStatement.Else);
         }
     }
 }

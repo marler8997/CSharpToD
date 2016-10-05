@@ -92,8 +92,10 @@ void run(string command)
 int main(string[] args)
 {
     bool noMscorlib = DEFAULT_NO_MSCORLIB;
+    bool compileSingleFiles = false;
     getopt(args,
-        ""no-mscorlib"", &noMscorlib);
+        ""no-mscorlib"", &noMscorlib,
+        ""compile-single-files"", &compileSingleFiles);
 
     foreach(project; projects)
     {
@@ -104,10 +106,7 @@ int main(string[] args)
             objectFiles[i] = sourceFile.setExtension(""obj"");
         }
 
-        //
-        // Compile
-        //
-        string compileCommand = format(""dmd -c -I%s"", rootPath);
+        string compileCommand = format(""dmd -I%s"", rootPath);
         if(!noMscorlib) {
             compileCommand ~= "" -I"" ~ mscorlibPath;
         }
@@ -115,31 +114,45 @@ int main(string[] args)
             compileCommand ~= "" -I"" ~ buildNormalizedPath(includePath);
         }
 
-        foreach(i, sourceFile; project.sourceFiles) {
-            if(tryRun(format(""%s -of%s %s"", compileCommand, objectFiles[i], sourceFile))) {
-                return 1;
-            }
-        }
-
-        //
-        // Link
-        //
-        string linkCommand = ""dmd"";
+        string linkArguments = """";
         if(project.outputType == OutputType.Library) {
-            linkCommand ~= "" -lib"";
+            linkArguments ~= "" -lib"";
         }
-        linkCommand ~= format("" -of%s"", buildNormalizedPath(rootPath, project.outputName));
         if(!noMscorlib) {
-            compileCommand ~= "" "" ~ buildNormalizedPath(mscorlibPath, ""mscorlib.lib"");
+            linkArguments ~= "" "" ~ buildNormalizedPath(mscorlibPath, ""mscorlib.lib"");
         }
         foreach(library; libraries) {
-            linkCommand ~= format("" %s"", library);
+            linkArguments ~= format("" %s"", library);
         }
-        foreach(objectFile; objectFiles) {
-            linkCommand ~= format("" %s"", objectFile);
-        }
-        if(tryRun(linkCommand)) {
-            return 1;
+        linkArguments ~= format("" -of%s"", buildNormalizedPath(rootPath, project.outputName));
+
+        // The compileSingleFiles option is MUCH slower, but I'm keeping it for now
+        // because compiling all source files together could cause a machine to run out of memory
+        if(compileSingleFiles)
+        {
+            // Compile
+            foreach(i, sourceFile; project.sourceFiles) {
+                if(tryRun(format(""%s -c -of%s %s"", compileCommand, objectFiles[i], sourceFile))) {
+                    return 1;
+                }
+            }
+
+            // Link
+            string linkCommand = ""dmd""~linkArguments;
+            foreach(objectFile; objectFiles) {
+                linkCommand ~= format("" %s"", objectFile);
+            }
+            if(tryRun(linkCommand)) {
+                return 1;
+            }
+        } else {
+            string compileAndLinkCommand = compileCommand~linkArguments;
+            foreach(i, sourceFile; project.sourceFiles) {
+                compileAndLinkCommand ~= "" ""~sourceFile;
+            }
+            if(tryRun(compileAndLinkCommand)) {
+                return 1;
+            }
         }
     }
     writeln(""Success"");

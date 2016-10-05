@@ -775,7 +775,7 @@ namespace CSharpToD
                 return;
             }
 
-            ModifierCategories modifiers = new ModifierCategories(typeDecl.Modifiers);
+            ModifierCategories modifiers = new ModifierCategories(generator, typeDecl.Modifiers);
 
             if(modifiers.@new || modifiers.@volatile || modifiers.@fixed ||
                 modifiers.@const || modifiers.@readonly)
@@ -1061,7 +1061,7 @@ namespace CSharpToD
         {
             WriteAttributeLists(delegateDecl.AttributeLists, false);
 
-            ModifierCategories modifiers = new ModifierCategories(delegateDecl.Modifiers);
+            ModifierCategories modifiers = new ModifierCategories(generator, delegateDecl.Modifiers);
             if (modifiers.@abstract || modifiers.@sealed || modifiers.@partial ||
                 modifiers.@new || modifiers.@volatile || modifiers.@fixed ||
                 modifiers.@static || modifiers.@const || modifiers.@readonly)
@@ -1151,7 +1151,7 @@ namespace CSharpToD
         {
             WriteAttributeLists(enumDecl.AttributeLists, false);
 
-            ModifierCategories modifiers = new ModifierCategories(enumDecl.Modifiers);
+            ModifierCategories modifiers = new ModifierCategories(generator, enumDecl.Modifiers);
             if(modifiers.@abstract || modifiers.partial || modifiers.@sealed ||
                 modifiers.@const || modifiers.@readonly || modifiers.@static || modifiers.@new ||
                 modifiers.@unsafe || modifiers.@volatile || modifiers.@fixed)
@@ -1263,7 +1263,7 @@ namespace CSharpToD
             }
             WriteDlangType(fieldDecl.Declaration.Type, TypeContext.Default, typeSymbol);
         }
-        void WriteFieldIdentifier(FieldDeclarationSyntax fieldDecl, ModifierCategories modifiers, ITypeSymbol typeSymbol, VariableDeclaratorSyntax variableDecl)
+        void WriteFieldNameAndInitializer(FieldDeclarationSyntax fieldDecl, ModifierCategories modifiers, ITypeSymbol typeSymbol, VariableDeclaratorSyntax variableDecl)
         {
             String identifierName = GetIdentifierName(variableDecl.Identifier.Text);
             if (typeSymbol.DlangTypeStringEqualsIdentifier(identifierName))
@@ -1284,7 +1284,7 @@ namespace CSharpToD
                     }
                     else
                     {
-                        writer.WriteCommentedInline("initializer stripped in skeleton mode");
+                        writer.Write("/* initializer stripped in skeleton mode */");
                     }
                 }
                 else
@@ -1298,7 +1298,7 @@ namespace CSharpToD
         }
         public override void VisitFieldDeclaration(FieldDeclarationSyntax fieldDecl)
         {
-            ModifierCategories modifiers = new ModifierCategories(fieldDecl.Modifiers);
+            ModifierCategories modifiers = new ModifierCategories(generator, fieldDecl.Modifiers);
             ITypeSymbol typeSymbol = currentFileModel.semanticModel.GetTypeInfo(fieldDecl.Declaration.Type).Type;
 
             //
@@ -1321,7 +1321,7 @@ namespace CSharpToD
                         {
                             writer.Write(", ");
                         }
-                        WriteFieldIdentifier(fieldDecl, modifiers, typeSymbol, variableDecl);
+                        WriteFieldNameAndInitializer(fieldDecl, modifiers, typeSymbol, variableDecl);
                     }
                 }
                 if (!atFirst)
@@ -1340,7 +1340,7 @@ namespace CSharpToD
                     WriteAttributeLists(fieldDecl.AttributeLists, false);
                     WriteFieldType(fieldDecl, modifiers, typeSymbol);
                     writer.Write("{0} ", variableDecl.ArgumentList.GetText());
-                    WriteFieldIdentifier(fieldDecl, modifiers, typeSymbol, variableDecl);
+                    WriteFieldNameAndInitializer(fieldDecl, modifiers, typeSymbol, variableDecl);
                     writer.WriteLine(";");
                 }
             }
@@ -1666,9 +1666,48 @@ namespace CSharpToD
             writer.Write(" = ");
             Visit(equalsValueClause.Value);
         }
-        public override void VisitObjectCreationExpression(ObjectCreationExpressionSyntax node)
+        public override void VisitObjectCreationExpression(ObjectCreationExpressionSyntax objectCreationExpression)
         {
-            throw new NotImplementedException();
+            if (objectCreationExpression.Initializer != null)
+            {
+                throw new InvalidOperationException(String.Format(
+                    "ObjectCreationExpression.Initializer is not null? \"{0}\"",
+                    objectCreationExpression.Initializer.GetText().ToString().Trim()));
+            }
+
+            writer.Write("new ");
+            TypeSyntax typeSyntax = objectCreationExpression.Type;
+            {
+                TypeInfo typeInfo = currentFileModel.semanticModel.GetTypeInfo(typeSyntax);
+                ITypeSymbol typeSymbol = typeInfo.Type;
+                ITypeSymbol convertedTypeSymbol = typeInfo.ConvertedType;
+                if (typeSymbol != null)
+                {
+                    throw new InvalidOperationException();
+                    /*
+                    INamedTypeSymbol
+
+                    //SourceNamedTypeSymbol sym;
+                    Microsoft.CodeAnalysis.CSharp.Symbols.ConstructedNamedTypeSymbol t;
+
+                    throw new SyntaxNodeException(typeSyntax, String.Format("SemanticModel did not have type syntax '{0}' (ConvertedType = {1})",
+                        typeSyntax.GetText().ToString().Trim(),
+                        (convertedTypeSymbol == null) ? "null" : convertedTypeSymbol.ToDisplayString()));
+                    */
+                }
+            }
+            SymbolInfo symbolInfo = currentFileModel.semanticModel.GetSymbolInfo(typeSyntax);
+            if (symbolInfo.Symbol == null)
+            {
+                throw new InvalidOperationException();
+            }
+            if (symbolInfo.Symbol.Kind != SymbolKind.NamedType)
+            {
+                throw new InvalidOperationException();
+            }
+            INamedTypeSymbol namedTypeSymbol = (INamedTypeSymbol)symbolInfo.Symbol;
+            WriteDlangType(typeSyntax, TypeContext.Default, namedTypeSymbol);
+            Visit(objectCreationExpression.ArgumentList);
         }
     }
 
@@ -1868,6 +1907,24 @@ namespace CSharpToD
     }
     struct ModifierCategories
     {
+        static readonly Dictionary<string, string> packageToInternalVisibilityMap = new Dictionary<string, string>();
+        static string GetInternalVisibility(bool rootModule, string packageName)
+        {
+            if (rootModule)
+            {
+                return "package";
+            }
+
+            string visibility;
+            if (!packageToInternalVisibilityMap.TryGetValue(packageName, out visibility))
+            {
+                visibility = String.Format("package({0})", packageName);
+                packageToInternalVisibilityMap.Add(packageName, visibility);
+            }
+            return visibility;
+        }
+
+
         public string csharpVisibility;
         public string dlangVisibility;
 
@@ -1882,7 +1939,7 @@ namespace CSharpToD
         public bool @volatile;
         public bool @fixed;
 
-        public ModifierCategories(SyntaxTokenList modifiers)
+        public ModifierCategories(DlangGenerator generator, SyntaxTokenList modifiers)
         {
             this.csharpVisibility = null;
             this.dlangVisibility = null;
@@ -1940,7 +1997,11 @@ namespace CSharpToD
                         if (this.csharpVisibility == "protected")
                         {
                             this.csharpVisibility = "protected internal";
-                            this.dlangVisibility = "public "; // Not sure what "protected internal" maps to, just use "public" for now
+                            this.dlangVisibility = "public"; // Currently there's not a way to implement protected internal, so I use public
+                            // Note: If I moved all the code in the same assembly to the same module, then "protected internal"
+                            //       would be equivalent to "protected" in D, but this would be a big change, and the disadvantage
+                            //       is that all the code in the assembly would be in 1 file.  Then namespaces would just be
+                            //       sub-modules that define a bunch of aliases.
                         }
                         else
                         {
@@ -1951,7 +2012,8 @@ namespace CSharpToD
                     else
                     {
                         this.csharpVisibility = text;
-                        this.dlangVisibility = "public"; // treat 'internal' as 'public'
+                        this.dlangVisibility = GetInternalVisibility(generator.csharpNamespace.Length == 0,
+                            generator.projectModels.assemblyPackageName);
                     }
                 }
                 else if (text == "static")

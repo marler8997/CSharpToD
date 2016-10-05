@@ -1,11 +1,10 @@
 
 Objects and Exceptions
 --------------------------------------------------------------------------------
-CSharpToD rewrites all references to System.Object and System.Exception to
-System.DotNetObject and System.DotNetException.  This is because the `Object`
-and `Exception` type names are reserved in D.  The current technique uses the
-DotNetObject and DotNetException as type to "thunk" .NET types to D type.
-
+The `Object` and `Exception` type names are reserved in D and cannot be extended
+to add the methods that .NET objects expect.  So CSharpToD replaces all
+references to the these types with `__DotNet__Object` and `__DotNet__Exception`
+respectively.  These "thunk" types provide the methods that .NET objects expect.
 
 Fields with the same name as their Type
 --------------------------------------------------------------------------------
@@ -41,10 +40,10 @@ class Foo1(T) { }
 class Foo2(T,K) { }
 ```
 .NET Generics are converted to D templates.  The caveat is that the number of
-generic arguments is appended to the symbol name.  This is because classes and
-templates cannot share names.  This problem could have been resolved by making
-all classes templates, but then you would have to include an empty template
-parameter list any time you wanted to use the non-generic version.
+generic arguments is appended to the symbol name.  This is because in D, classes
+and templates cannot share names.  This problem could have been resolved by
+making all classes templates, but then you would have to include an empty
+template parameter list any time you wanted to use a non-generic class.
 
 Namespaces To Modules
 --------------------------------------------------------------------------------
@@ -109,20 +108,21 @@ Reflection
 --------------------------------------------------------------------------------
 The current plan for reflection is to generate immutable data structures that
 will represent the original .NET assembly reflection types.  The goal is to
-maintain the same reflection API and use the same types.
+maintain the same reflection API to access these data structures.
 
-The `internal` modifier
+The `protected internal` modifier
 --------------------------------------------------------------------------------
-C# supports the `internal` modifier which makes the code visible to the current
-assembly only. However, cs2d has no concept of assemblies. So cs2d treats
-`internal` the same as `public`.  This should allow all converted code to work,
-but may cause extra types to be visible that were not intended to be.
+The .NET `internal` modifier translates to the D `package(assemblyName)`
+visibility, however, the .NET `protected internal` visibility has no translation
+with the current implementation.  So right now, CSharpToD just translates it
+to `public`.
 
 Struct Interfaces
 --------------------------------------------------------------------------------
-.NET structs can implement interfaces, but D interfaces cannot. The way .NET
-implements struct interfaces is through boxing.  Whenever a struct is assigned
-to an interface, a copy is created on the heap, this is called "boxing".
+.NET structs can implement interfaces, but D structs cannot. The way .NET
+implements struct interfaces is through boxing, which means that whenever a
+struct is assigned to an interface, a copy of that struct is created on the
+heap.
 
 To support this in D, every struct that implements .NET interfaces will have
 an extra type definition.  For exampe, if `SomeInterface` exists, the following
