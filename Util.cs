@@ -2,6 +2,9 @@
 using System.Collections;
 using System.Collections.Generic;
 
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Text;
+
 namespace CSharpToD
 {
     public struct KeyValues<T, K> : IEnumerable<KeyValuePair<T, List<K>>>
@@ -164,5 +167,40 @@ namespace CSharpToD
             }
             return str.Substring(startOffset, peelLimit - startOffset);
         }
+    }
+    public static class DocumentExtensions
+    {
+        // A wrapper for TryGetText that throws an exception on error
+        public static SourceText GetText(this Document document)
+        {
+            SourceText text;
+            if (!document.TryGetText(out text))
+            {
+                throw new Exception(String.Format(
+                    "CodeBug: Expected document {0} to have source text but TryGetText return false", document.FilePath));
+            }
+            return text;
+        }
+    }
+    public static class SourceTextExtensions
+    {
+        public static int GetLineNumber(this SourceText text, Location location)
+        {
+            var line = text.Lines.GetLineFromPosition(location.SourceSpan.Start);
+            return line.LineNumber;
+        }
+        public static int GetLineNumber(this SourceText text, int position)
+        {
+            var line = text.Lines.GetLineFromPosition(position);
+            return line.LineNumber;
+        }
+        /*
+        public static void GetLineAndOffset(this SourceText text, int position, out int lineNumber, out int offset)
+        {
+            var line = text.Lines.GetLineFromPosition(position);
+            lineNumber = line.LineNumber;
+            offset = position - line.Start;
+        }
+        */
     }
 }

@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 
 namespace CSharpToD
 {
@@ -184,7 +185,8 @@ namespace CSharpToD
                 {
                     if (!CSharpToD.ignoreFileErrors)
                     {
-                        Console.WriteLine("{0}Error: {1}: {2}", stage, document.FilePath, diagnostic.GetMessage());
+                        Console.WriteLine("{0}Error: {1}({2}) {3}", stage, document.FilePath,
+                            document.GetText().GetLineNumber(diagnostic.Location), diagnostic.GetMessage());
                         errorCount++;
                     }
                 }
@@ -192,13 +194,15 @@ namespace CSharpToD
                 {
                     if (!CSharpToD.noWarnings)
                     {
-                        Console.WriteLine("{0}Warning: {1}: {2}", stage, document.FilePath, diagnostic.GetMessage());
+                        Console.WriteLine("{0}Warning: {1}({2}) {3}", stage, document.FilePath,
+                            document.GetText().GetLineNumber(diagnostic.Location), diagnostic.GetMessage());
                     }
                     warningCount++;
                 }
                 else if (diagnostic.Severity != DiagnosticSeverity.Hidden)
                 {
-                    Console.WriteLine("{0}: {1}: {2}", diagnostic.Severity, document.FilePath, diagnostic.GetMessage());
+                    Console.WriteLine("{0}: {1}({2}) {3}", diagnostic.Severity, document.FilePath,
+                        document.GetText().GetLineNumber(diagnostic.Location), diagnostic.GetMessage());
                 }
             }
             if (errorCount > 0)

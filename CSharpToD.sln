@@ -5,6 +5,8 @@ VisualStudioVersion = 14.0.25420.1
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CSharpToD", "CSharpToD.csproj", "{071AE204-EA35-4BB3-8D48-43AD47467F4A}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CSharpToCpp", "CSharpToCpp.csproj", "{871D1316-5F4B-41C5-AB8F-E2122767337E}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x86 = Debug|x86
@@ -15,6 +17,10 @@ Global
 		{071AE204-EA35-4BB3-8D48-43AD47467F4A}.Debug|x86.Build.0 = Debug|x86
 		{071AE204-EA35-4BB3-8D48-43AD47467F4A}.Release|x86.ActiveCfg = Release|x86
 		{071AE204-EA35-4BB3-8D48-43AD47467F4A}.Release|x86.Build.0 = Release|x86
+		{871D1316-5F4B-41C5-AB8F-E2122767337E}.Debug|x86.ActiveCfg = Debug|x86
+		{871D1316-5F4B-41C5-AB8F-E2122767337E}.Debug|x86.Build.0 = Debug|x86
+		{871D1316-5F4B-41C5-AB8F-E2122767337E}.Release|x86.ActiveCfg = Release|x86
+		{871D1316-5F4B-41C5-AB8F-E2122767337E}.Release|x86.Build.0 = Release|x86
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
